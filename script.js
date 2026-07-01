@@ -1363,21 +1363,57 @@ function getDefaultUsers() {
 
 function loadUsers() {
   var raw = storageGet(STORAGE_USERS);
+  var storedUsers = [];
   if (raw) {
-    try { users = JSON.parse(raw); } catch(e) { users = []; }
-  } else {
-    users = [];
+    try { storedUsers = JSON.parse(raw); } catch(e) { storedUsers = []; }
   }
 
-  if (!users.length) {
-    users = getDefaultUsers();
-    saveUsers();
-    return;
+  var defaults = getDefaultUsers();
+  var mergedUsers = [];
+  var seenIds = {};
+
+  for (var i = 0; i < defaults.length; i++) {
+    var defaultUser = defaults[i];
+    var existing = null;
+    for (var j = 0; j < storedUsers.length; j++) {
+      var u = storedUsers[j];
+      if (u && (u.id === defaultUser.id || u.name === defaultUser.name)) {
+        existing = u;
+        break;
+      }
+    }
+
+    if (existing) {
+      mergedUsers.push({
+        id: defaultUser.id,
+        name: defaultUser.name,
+        color: existing.color || defaultUser.color,
+        avatar: existing.avatar || defaultUser.avatar,
+        password: existing.password || defaultUser.password
+      });
+    } else {
+      mergedUsers.push({
+        id: defaultUser.id,
+        name: defaultUser.name,
+        color: defaultUser.color,
+        avatar: defaultUser.avatar,
+        password: defaultUser.password
+      });
+    }
+
+    seenIds[defaultUser.id] = true;
   }
 
-  for (var i = 0; i < users.length; i++) {
-    if (!users[i].password) users[i].password = '123456';
+  for (var k = 0; k < storedUsers.length; k++) {
+    var customUser = storedUsers[k];
+    if (!customUser) continue;
+    if (customUser.id && seenIds[customUser.id]) continue;
+    if (customUser.name === 'Ingrid' || customUser.name === 'Lúcia') continue;
+    if (!customUser.password) customUser.password = '123456';
+    mergedUsers.push(customUser);
   }
+
+  users = mergedUsers;
   saveUsers();
 }
 
@@ -1759,4 +1795,5 @@ function deleteAlert(id) {
   renderAlerts();
   renderDashboard();
 }
+
 
