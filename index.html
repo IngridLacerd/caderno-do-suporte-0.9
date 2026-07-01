@@ -18,9 +18,10 @@
       <div class="logo-icon"><i class="ti ti-notebook"></i></div>
       <div>
         <span class="login-app-name">Caderno do Suporte</span>
-        <small>Selecione seu perfil para continuar</small>
+        <small>Entre com seu perfil e senha para continuar</small>
       </div>
     </div>
+    <div class="login-help">Perfis padrão: Ingrid e Lúcia. Senha padrão: 123456.</div>
     <div class="login-user-grid" id="login-user-grid"></div>
     <div class="login-actions">
       <button class="btn-new" onclick="openCreateUserModal()"><i class="ti ti-plus"></i> Novo perfil</button>
@@ -37,6 +38,14 @@
     <div class="form-group">
       <label>Nome do perfil</label>
       <input type="text" id="new-user-name" placeholder="Ex: João, Suporte 1..." onkeydown="if(event.key==='Enter')createUser()" />
+    </div>
+    <div class="form-group">
+      <label>Senha</label>
+      <input type="password" id="new-user-password" placeholder="Deixe em branco para usar 123456" onkeydown="if(event.key==='Enter')createUser()" />
+    </div>
+    <div class="form-group">
+      <label>Confirmar senha</label>
+      <input type="password" id="new-user-password-confirm" placeholder="Repita a senha" onkeydown="if(event.key==='Enter')createUser()" />
     </div>
     <div class="form-group">
       <label>Ícone</label>
@@ -114,6 +123,10 @@
         </div>
         <button class="icon-btn" onclick="logout()" title="Sair / trocar perfil"><i class="ti ti-logout"></i></button>
       </div>
+      <div class="sidebar-profile-card">
+        <div class="sidebar-profile-label">Meu perfil</div>
+        <button class="btn-new btn-small" onclick="openPasswordModal()">Trocar senha</button>
+      </div>
     </div>
   </aside>
 
@@ -150,6 +163,16 @@
       </div>
 
       <div id="dashboard-view">
+        <div class="profile-panel-card" id="profile-panel-card" style="display:none">
+          <div class="profile-panel-info">
+            <div class="profile-panel-avatar" id="profile-panel-avatar"><i class="ti ti-user"></i></div>
+            <div>
+              <div class="profile-panel-label">Perfil ativo</div>
+              <div class="profile-panel-name" id="profile-panel-name">—</div>
+            </div>
+          </div>
+          <button class="btn-new btn-small" onclick="openPasswordModal()">Trocar senha</button>
+        </div>
         <div class="dashboard-alert-banner" id="dashboard-alert-banner" style="display:none" onclick="openAlertsModal()">
           <i class="ti ti-alert-triangle"></i>
           <span class="dab-count"></span>
@@ -240,6 +263,27 @@
       </div>
 
       <div class="cards-grid" id="cards-grid" style="display:none"></div>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="change-password-modal" style="display:none" onclick="if(event.target===this)closePasswordModal()">
+  <div class="modal change-password-modal">
+    <div class="modal-header">
+      <h3>Trocar senha</h3>
+      <button class="icon-btn" onclick="closePasswordModal()"><i class="ti ti-x"></i></button>
+    </div>
+    <div class="form-group">
+      <label>Nova senha</label>
+      <input type="password" id="new-password" placeholder="Digite a nova senha" />
+    </div>
+    <div class="form-group">
+      <label>Confirmar nova senha</label>
+      <input type="password" id="new-password-confirm" placeholder="Repita a nova senha" onkeydown="if(event.key==='Enter')changePassword()" />
+    </div>
+    <div class="modal-footer">
+      <button class="btn-cancel" onclick="closePasswordModal()">Cancelar</button>
+      <button class="btn-save" onclick="changePassword()">Salvar</button>
     </div>
   </div>
 </div>
