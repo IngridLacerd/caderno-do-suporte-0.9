@@ -1354,10 +1354,31 @@ var alerts = [];
 var USER_COLORS = ['#880000','#0C447C','#085041','#3C3489','#633806','#27500A','#712B13','#555550'];
 var USER_AVATARS = ['ti-user-circle','ti-user','ti-user-star','ti-user-bolt','ti-user-heart','ti-user-shield'];
 
+function getDefaultUsers() {
+  return [
+    { id: 'u_ingrid', name: 'Ingrid', color: '#880000', avatar: 'ti-user-circle', password: '123456' },
+    { id: 'u_lucia', name: 'Lúcia', color: '#0C447C', avatar: 'ti-user-star', password: '123456' }
+  ];
+}
+
 function loadUsers() {
   var raw = storageGet(STORAGE_USERS);
-  if (raw) { try { users = JSON.parse(raw); } catch(e) { users = []; } }
-  else { users = []; }
+  if (raw) {
+    try { users = JSON.parse(raw); } catch(e) { users = []; }
+  } else {
+    users = [];
+  }
+
+  if (!users.length) {
+    users = getDefaultUsers();
+    saveUsers();
+    return;
+  }
+
+  for (var i = 0; i < users.length; i++) {
+    if (!users[i].password) users[i].password = '123456';
+  }
+  saveUsers();
 }
 
 function saveUsers() { storageSet(STORAGE_USERS, JSON.stringify(users)); }
@@ -1396,6 +1417,26 @@ function hideLoginScreen() {
   document.getElementById('app-root').style.display = '';
 }
 
+function showLoginPassword(userId) {
+  var allInputs = document.querySelectorAll('.login-password-input');
+  var allButtons = document.querySelectorAll('.login-enter-btn');
+  for (var i = 0; i < allInputs.length; i++) {
+    allInputs[i].style.display = 'none';
+  }
+  for (var j = 0; j < allButtons.length; j++) {
+    allButtons[j].style.display = 'none';
+  }
+
+  var input = document.getElementById('login-pass-' + userId);
+  var btn = document.getElementById('login-enter-' + userId);
+  if (input) {
+    input.style.display = 'block';
+    input.value = '';
+    input.focus();
+  }
+  if (btn) btn.style.display = 'inline-flex';
+}
+
 function renderLoginUsers() {
   var grid = document.getElementById('login-user-grid');
   if (!grid) return;
@@ -1406,18 +1447,29 @@ function renderLoginUsers() {
   var html = '';
   for (var i = 0; i < users.length; i++) {
     var u = users[i];
-    html += '<div class="login-avatar-card" onclick="loginAs(\'' + u.id + '\')" style="--ua-color:' + u.color + '">'
+    html += '<div class="login-avatar-card" onclick="showLoginPassword(\'' + u.id + '\')" style="--ua-color:' + u.color + '">'
       + '<div class="login-avatar-icon"><i class="ti ' + u.avatar + '"></i></div>'
       + '<span class="login-avatar-name">' + esc(u.name) + '</span>'
-      + '<button class="login-del-user" onclick="deleteUser(event,\'' + u.id + '\')" title="Remover perfil"><i class="ti ti-x"></i></button>'
+      + '<input type="password" class="login-password-input" id="login-pass-' + u.id + '" placeholder="Senha" onkeydown="if(event.key===\'Enter\') loginAs(\'' + u.id + '\', document.getElementById(\'login-pass-' + u.id + '\').value)" onClick="event.stopPropagation()" />'
+      + '<button class="btn-new login-enter-btn" id="login-enter-' + u.id + '" onclick="event.stopPropagation(); loginAs(\'' + u.id + '\', document.getElementById(\'login-pass-' + u.id + '\').value)">Entrar</button>'
+      + '<button class="login-del-user" onclick="event.stopPropagation(); deleteUser(event,\'' + u.id + '\')" title="Remover perfil"><i class="ti ti-x"></i></button>'
       + '</div>';
   }
   grid.innerHTML = html;
 }
 
-function loginAs(userId) {
+function loginAs(userId, password) {
   var u = users.find(function(x) { return x.id === userId; });
   if (!u) return;
+
+  var enteredPassword = (password || '').toString();
+  var expectedPassword = (u.password || '123456').toString();
+
+  if (enteredPassword !== expectedPassword) {
+    showToast('Senha incorreta para ' + u.name + '.');
+    return;
+  }
+
   currentUser = u;
   saveSession();
   hideLoginScreen();
@@ -1437,9 +1489,14 @@ function logout() {
 
 function openCreateUserModal() {
   document.getElementById('new-user-name').value = '';
+  document.getElementById('new-user-password').value = '';
+  document.getElementById('new-user-password-confirm').value = '';
   document.getElementById('user-color-pick').value = USER_COLORS[users.length % USER_COLORS.length];
   var avatarBtns = document.querySelectorAll('.avatar-pick-btn');
-  if (avatarBtns.length) avatarBtns[0].classList.add('selected');
+  if (avatarBtns.length) {
+    avatarBtns.forEach(function(btn) { btn.classList.remove('selected'); });
+    avatarBtns[0].classList.add('selected');
+  }
   document.getElementById('create-user-modal').style.display = 'flex';
   setTimeout(function() { document.getElementById('new-user-name').focus(); }, 50);
 }
@@ -1458,13 +1515,23 @@ function createUser() {
   var name = (nameEl ? nameEl.value : '').trim();
   if (!name) { showToast('Digite um nome para o perfil.'); return; }
 
+  var passwordEl = document.getElementById('new-user-password');
+  var confirmEl = document.getElementById('new-user-password-confirm');
+  var password = passwordEl ? passwordEl.value : '';
+  var confirmPassword = confirmEl ? confirmEl.value : '';
+
+  if (password !== confirmPassword) {
+    showToast('As senhas não conferem.');
+    return;
+  }
+
   var colorEl = document.getElementById('user-color-pick');
   var color = colorEl ? colorEl.value : USER_COLORS[0];
 
   var selBtn = document.querySelector('.avatar-pick-btn.selected');
   var avatar = selBtn ? selBtn.dataset.icon : USER_AVATARS[0];
 
-  var u = { id: 'u_' + Date.now(), name: name, color: color, avatar: avatar };
+  var u = { id: 'u_' + Date.now(), name: name, color: color, avatar: avatar, password: password || '123456' };
   users.push(u);
   saveUsers();
   closeCreateUserModal();
@@ -1482,12 +1549,56 @@ function deleteUser(e, userId) {
   renderLoginUsers();
 }
 
+function openPasswordModal() {
+  if (!currentUser) return;
+  document.getElementById('new-password').value = '';
+  document.getElementById('new-password-confirm').value = '';
+  document.getElementById('change-password-modal').style.display = 'flex';
+  setTimeout(function() { document.getElementById('new-password').focus(); }, 50);
+}
+
+function closePasswordModal() {
+  document.getElementById('change-password-modal').style.display = 'none';
+}
+
+function changePassword() {
+  if (!currentUser) return;
+  var newPasswordEl = document.getElementById('new-password');
+  var confirmEl = document.getElementById('new-password-confirm');
+  var password = newPasswordEl ? newPasswordEl.value : '';
+  var confirmPassword = confirmEl ? confirmEl.value : '';
+
+  if (!password || !confirmPassword) {
+    showToast('Digite e confirme a nova senha.');
+    return;
+  }
+
+  if (password !== confirmPassword) {
+    showToast('As senhas não conferem.');
+    return;
+  }
+
+  var user = users.find(function(u) { return u.id === currentUser.id; });
+  if (!user) return;
+
+  user.password = password;
+  currentUser.password = password;
+  saveUsers();
+  saveSession();
+  closePasswordModal();
+  showToast('Senha alterada com sucesso.');
+}
+
 function updateUserUI() {
   var avatar = document.getElementById('sidebar-user-avatar');
   var name   = document.getElementById('sidebar-user-name');
+  var panelCard = document.getElementById('profile-panel-card');
+  var panelAvatar = document.getElementById('profile-panel-avatar');
+  var panelName = document.getElementById('profile-panel-name');
   if (!currentUser) {
     if (avatar) avatar.innerHTML = '<i class="ti ti-user"></i>';
     if (name)   name.textContent = 'Sem perfil';
+    if (panelCard) panelCard.style.display = 'none';
     return;
   }
   if (avatar) {
@@ -1495,6 +1606,12 @@ function updateUserUI() {
     avatar.style.color = currentUser.color;
   }
   if (name) name.textContent = currentUser.name;
+  if (panelCard) panelCard.style.display = 'flex';
+  if (panelAvatar) {
+    panelAvatar.innerHTML = '<i class="ti ' + currentUser.avatar + '"></i>';
+    panelAvatar.style.color = currentUser.color;
+  }
+  if (panelName) panelName.textContent = currentUser.name;
 }
 
 
