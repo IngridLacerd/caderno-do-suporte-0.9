@@ -1,8 +1,20 @@
-// ── CONSTANTES ────────────────────────────────────────────────────────────────
+// ── API ───────────────────────────────────────────────────────────────────────
 
-var STORAGE_PROCS   = 'suporte_procs_v3';
-var STORAGE_CATS    = 'suporte_cats_v3';
-var STORAGE_HISTORY = 'suporte_history_v3';
+var API = '';
+
+async function apiFetch(path, opts) {
+  try {
+    var res = await fetch(API + path, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts));
+    var data = await res.json();
+    if (!res.ok) throw new Error(data.message || 'Erro na API');
+    return data;
+  } catch(e) {
+    console.error('API Error', path, e);
+    throw e;
+  }
+}
+
+// ── CONSTANTES ────────────────────────────────────────────────────────────────
 
 var DEFAULT_CATS = [
   { id: 'nfc',         label: 'NFC',         icon: 'ti-device-mobile', fixed: true },
@@ -40,159 +52,134 @@ var STATUS_ICONS = {
 };
 
 var MAX_HISTORY = 30;
+var USER_COLORS  = ['#880000','#0C447C','#085041','#3C3489','#633806','#27500A','#712B13','#555550'];
+var USER_AVATARS = ['ti-user-circle','ti-user','ti-user-star','ti-user-bolt','ti-user-heart','ti-user-shield'];
 
 // ── ESTADO ────────────────────────────────────────────────────────────────────
 
-var procs      = [];
-var cats       = [];
-var accessHistory    = [];
-var currentView = 'dashboard'; // dashboard | favorites | history | category | all
-var selCat     = null;
-var editId     = null;
-var stepCount  = 0;
-var pendingStepImages = {}; // stepRowId -> array of base64 images (while editing)
+var procs         = [];
+var cats          = [];
+var accessHistory = [];
+var currentView   = 'dashboard';
+var selCat        = null;
+var editId        = null;
+var stepCount     = 0;
+var pendingStepImages = {};
 
-// ── STORAGE SEGURO ────────────────────────────────────────────────────────────
+var currentUser = null;
+var users       = [];
+var alerts      = [];
+var notes       = [];
+var currentNoteId = null;
+
+// ── STORAGE LOCAL (apenas tema e sessão) ──────────────────────────────────────
 
 function storageGet(key) {
   try { return localStorage.getItem(key); } catch(e) { return null; }
 }
-
 function storageSet(key, value) {
   try { localStorage.setItem(key, value); return true; } catch(e) { return false; }
 }
 
-// ── PERSISTÊNCIA ──────────────────────────────────────────────────────────────
+// ── CARREGAMENTO INICIAL (API) ────────────────────────────────────────────────
 
-function loadData() {
-  var p = storageGet(STORAGE_PROCS);
-  var c = storageGet(STORAGE_CATS);
-  var h = storageGet(STORAGE_HISTORY);
-
-  if (c) {
-    try { cats = JSON.parse(c); } catch(e) { cats = DEFAULT_CATS.slice(); }
-  } else {
-    cats = DEFAULT_CATS.slice();
+async function loadData() {
+  try {
+    var results = await Promise.all([
+      apiFetch('/api/procedures'),
+      apiFetch('/api/categories'),
+      apiFetch('/api/history')
+    ]);
+    procs         = results[0];
+    cats          = results[1].length ? results[1] : DEFAULT_CATS.slice();
+    accessHistory = results[2];
+  } catch(e) {
+    procs = []; cats = DEFAULT_CATS.slice(); accessHistory = [];
+    showToast('Erro ao carregar dados do servidor.');
   }
+}
 
-  if (p) {
-    try { procs = JSON.parse(p); } catch(e) { procs = getDefaultProcs(); }
-  } else {
-    procs = getDefaultProcs();
-    saveProcs();
-  }
-
-  if (h) {
-    try { accessHistory = JSON.parse(h); } catch(e) { accessHistory = []; }
-  } else {
-    accessHistory = [];
-  }
-
-  // Garantir campos novos em procedimentos antigos
-  for (var i = 0; i < procs.length; i++) {
-    if (procs[i].status === undefined) procs[i].status = 'pendente';
-    if (procs[i].favorite === undefined) procs[i].favorite = false;
-    if (procs[i].client === undefined) procs[i].client = { name: '', phone: '' };
-    if (!procs[i].steps) procs[i].steps = [];
-    for (var j = 0; j < procs[i].steps.length; j++) {
-      if (typeof procs[i].steps[j] === 'string') {
-        procs[i].steps[j] = { text: procs[i].steps[j], images: [] };
+async function loadUsers() {
+  try {
+    users = await apiFetch('/api/users');
+    // garantir usuários padrão
+    var defaults = [
+      { id: 'u_ingrid', name: 'Ingrid', color: '#880000', avatar: 'ti-user-circle', password: '123456' },
+      { id: 'u_lucia',  name: 'Lúcia',  color: '#0C447C', avatar: 'ti-user-star',   password: '123456' }
+    ];
+    for (var i = 0; i < defaults.length; i++) {
+      var d = defaults[i];
+      var found = users.find(function(u) { return u.id === d.id; });
+      if (!found) {
+        var created = await apiFetch('/api/users', { method: 'POST', body: JSON.stringify({ id: d.id, name: d.name, color: d.color, avatar: d.avatar, password: d.password }) });
+        users.push(created);
       }
-      if (!procs[i].steps[j].images) procs[i].steps[j].images = [];
     }
+  } catch(e) {
+    users = [];
   }
 }
 
-function saveProcs() {
-  storageSet(STORAGE_PROCS, JSON.stringify(procs));
+function loadSession() {
+  var raw = storageGet('suporte_session_v1');
+  if (raw) { try { currentUser = JSON.parse(raw); } catch(e) { currentUser = null; } }
+  if (currentUser) {
+    var found = users.find(function(u) { return u.id === currentUser.id; });
+    if (!found) currentUser = null;
+  }
+}
+function saveSession() {
+  if (currentUser) storageSet('suporte_session_v1', JSON.stringify(currentUser));
+  else storageSet('suporte_session_v1', '');
 }
 
-function saveCats() {
-  storageSet(STORAGE_CATS, JSON.stringify(cats));
+async function loadAlerts() {
+  try { alerts = await apiFetch('/api/alerts'); }
+  catch(e) { alerts = []; }
 }
 
-function saveHistory() {
-  storageSet(STORAGE_HISTORY, JSON.stringify(accessHistory));
+async function loadNotes() {
+  if (!currentUser) { notes = []; return; }
+  try { notes = await apiFetch('/api/notes?userId=' + currentUser.id); }
+  catch(e) { notes = []; }
 }
 
-function getDefaultProcs() {
-  return [
-    {
-      id: 1,
-      title: 'Configurar impressora fiscal',
-      cat: 'impressao',
-      status: 'resolvido',
-      favorite: true,
-      steps: [
-        { text: 'Verificar se a impressora está conectada à rede ou USB', images: [] },
-        { text: 'Acessar Configurações > Periféricos > Impressoras', images: [] },
-        { text: 'Clicar em Adicionar impressora e selecionar o modelo', images: [] },
-        { text: 'Instalar o driver caso solicitado', images: [] },
-        { text: 'Realizar impressão de teste pelo sistema', images: [] }
-      ],
-      obs: 'Para impressoras Bematech, usar driver versão 3.x ou superior.',
-      client: { name: '', phone: '' }
-    },
-    {
-      id: 2,
-      title: 'Emitir NFC-e manualmente',
-      cat: 'nfc',
-      status: 'pendente',
-      favorite: false,
-      steps: [
-        { text: 'Acessar o menu Fiscal > NFC-e', images: [] },
-        { text: 'Selecionar a venda pelo número do cupom', images: [] },
-        { text: 'Revisar os dados do cliente e itens', images: [] },
-        { text: 'Clicar em Transmitir e aguardar o retorno da SEFAZ', images: [] },
-        { text: 'Imprimir o DANFE ou enviar por e-mail ao cliente', images: [] }
-      ],
-      obs: 'Certificado digital deve estar válido. Verificar prazo de validade mensalmente.',
-      client: { name: '', phone: '' }
-    },
-    {
-      id: 3,
-      title: 'Importar XML de nota de entrada',
-      cat: 'xml',
-      status: 'andamento',
-      favorite: false,
-      steps: [
-        { text: 'Baixar o XML da NF-e no portal do fornecedor ou e-mail', images: [] },
-        { text: 'Acessar Estoque > Entrada de Mercadoria > Importar XML', images: [] },
-        { text: 'Selecionar o arquivo .xml baixado', images: [] },
-        { text: 'Conferir os itens, quantidades e preços com a NF física', images: [] },
-        { text: 'Confirmar a entrada e arquivar o XML', images: [] }
-      ],
-      obs: '',
-      client: { name: '', phone: '' }
+// ── SALVAR NA API ─────────────────────────────────────────────────────────────
+
+async function saveProc(proc, isNew) {
+  if (isNew) {
+    var created = await apiFetch('/api/procedures', { method: 'POST', body: JSON.stringify(proc) });
+    procs.unshift(created);
+    return created;
+  } else {
+    var updated = await apiFetch('/api/procedures/' + proc.id, { method: 'PUT', body: JSON.stringify(proc) });
+    for (var i = 0; i < procs.length; i++) {
+      if (String(procs[i].id) === String(proc.id)) { procs[i] = updated; break; }
     }
-  ];
+    return updated;
+  }
+}
+
+async function saveCat(cat) {
+  return apiFetch('/api/categories', { method: 'POST', body: JSON.stringify(cat) });
+}
+
+async function saveHistory() {
+  // persistido automaticamente no logHistory
 }
 
 // ── HISTÓRICO ─────────────────────────────────────────────────────────────────
 
-function logHistory(procId) {
+async function logHistory(procId) {
   var p = findProc(procId);
   if (!p) return;
-
-  // remove entrada anterior do mesmo procedimento
-  history = accessHistory.filter(function(h) { return h.procId !== procId; });
-
-  accessHistory.unshift({
-    procId: procId,
-    title: p.title,
-    cat: p.cat,
-    timestamp: Date.now()
-  });
-
-  if (accessHistory.length > MAX_HISTORY) history = accessHistory.slice(0, MAX_HISTORY);
-  saveHistory();
-}
-
-function clearHistory() {
-  if (!confirm('Limpar todo o histórico de acessos?')) return;
-  accessHistory = [];
-  saveHistory();
-  render();
+  accessHistory = accessHistory.filter(function(h) { return String(h.procId) !== String(procId); });
+  var entry = { procId: procId, title: p.title, cat: p.cat, userId: currentUser ? currentUser.id : null, timestamp: Date.now() };
+  accessHistory.unshift(entry);
+  if (accessHistory.length > MAX_HISTORY) accessHistory = accessHistory.slice(0, MAX_HISTORY);
+  try {
+    await apiFetch('/api/history', { method: 'POST', body: JSON.stringify({ procId: procId, title: p.title, cat: p.cat, userId: currentUser ? currentUser.id : null }) });
+  } catch(e) {}
 }
 
 function formatRelativeTime(ts) {
@@ -207,11 +194,11 @@ function formatRelativeTime(ts) {
   return 'há ' + day + ' dias';
 }
 
-// ── HELPERS DE DADOS ─────────────────────────────────────────────────────────
+// ── HELPERS ───────────────────────────────────────────────────────────────────
 
 function findProc(id) {
   for (var i = 0; i < procs.length; i++) {
-    if (procs[i].id === id) return procs[i];
+    if (String(procs[i].id) === String(id)) return procs[i];
   }
   return null;
 }
@@ -232,7 +219,11 @@ function getFavorites() {
   return procs.filter(function(p) { return p.favorite; });
 }
 
-// ── NAVEGAÇÃO / VIEWS ────────────────────────────────────────────────────────
+function esc(str) {
+  return (str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── NAVEGAÇÃO ─────────────────────────────────────────────────────────────────
 
 function setView(view, catId) {
   currentView = view;
@@ -247,26 +238,21 @@ function setView(view, catId) {
 
 function onSearchInput() {
   var q = document.getElementById('search').value.trim();
-  if (q && currentView === 'dashboard') {
-    currentView = 'all';
-    selCat = null;
-  }
+  if (q && currentView === 'dashboard') { currentView = 'all'; selCat = null; }
   render();
 }
 
 // ── SIDEBAR ───────────────────────────────────────────────────────────────────
 
 function renderSidebar() {
-  // itens de visão geral
   setActiveClass('view-dashboard', currentView === 'dashboard');
   setActiveClass('view-favorites', currentView === 'favorites');
-  setActiveClass('view-history', currentView === 'history');
-  setActiveClass('view-notes', currentView === 'notes');
+  setActiveClass('view-history',   currentView === 'history');
+  setActiveClass('view-notes',     currentView === 'notes');
 
   var favCount = document.getElementById('fav-count');
   if (favCount) favCount.textContent = getFavorites().length;
 
-  // categorias
   var list = document.getElementById('cat-list');
   if (list) {
     var html = '';
@@ -294,7 +280,7 @@ function setActiveClass(id, isActive) {
   else el.classList.remove('active');
 }
 
-// ── RENDER PRINCIPAL ─────────────────────────────────────────────────────────
+// ── RENDER ────────────────────────────────────────────────────────────────────
 
 function render() {
   renderSidebar();
@@ -307,7 +293,6 @@ function render() {
   var q = document.getElementById('search') ? document.getElementById('search').value.trim().toLowerCase() : '';
   var statusFilter = document.getElementById('status-filter') ? document.getElementById('status-filter').value : '';
 
-  // título do topo
   var title = 'Painel';
   if (currentView === 'favorites') title = 'Favoritos';
   else if (currentView === 'history') title = 'Histórico';
@@ -315,16 +300,15 @@ function render() {
   else if (currentView === 'category') title = getCatMeta(selCat).label;
   else if (currentView === 'all') title = 'Todos os procedimentos';
 
-  var titleEl = document.getElementById('content-title');
+  var titleEl  = document.getElementById('content-title');
   var topbarEl = document.getElementById('topbar-title');
-  if (titleEl) titleEl.textContent = title;
+  if (titleEl) titleEl.textContent  = title;
   if (topbarEl) topbarEl.textContent = title;
 
-  // mostrar/esconder seções
   if (currentView === 'notes') {
     dashboardEl.style.display = 'none';
-    historyEl.style.display = 'none';
-    gridEl.style.display = 'none';
+    historyEl.style.display   = 'none';
+    gridEl.style.display      = 'none';
     if (notesEl) notesEl.style.display = '';
     renderNotesView();
     var countElN = document.getElementById('content-count');
@@ -336,8 +320,8 @@ function render() {
 
   if (currentView === 'dashboard' && !q) {
     dashboardEl.style.display = '';
-    historyEl.style.display = 'none';
-    gridEl.style.display = 'none';
+    historyEl.style.display   = 'none';
+    gridEl.style.display      = 'none';
     renderDashboard();
     var countEl = document.getElementById('content-count');
     if (countEl) countEl.textContent = '';
@@ -346,362 +330,334 @@ function render() {
 
   if (currentView === 'history' && !q) {
     dashboardEl.style.display = 'none';
-    historyEl.style.display = '';
-    gridEl.style.display = 'none';
-    renderHistory();
-    var countEl2 = document.getElementById('content-count');
-    if (countEl2) countEl2.textContent = accessHistory.length + ' acesso' + (accessHistory.length !== 1 ? 's' : '');
+    historyEl.style.display   = '';
+    gridEl.style.display      = 'none';
+    renderHistoryView();
+    var countElH = document.getElementById('content-count');
+    if (countElH) countElH.textContent = accessHistory.length + ' acesso' + (accessHistory.length !== 1 ? 's' : '');
     return;
   }
 
-  // lista de cards (all / favorites / category / busca)
   dashboardEl.style.display = 'none';
-  historyEl.style.display = 'none';
-  gridEl.style.display = '';
+  historyEl.style.display   = 'none';
+  gridEl.style.display      = '';
 
-  var filtered = procs.filter(function(p) {
-    var matchView = true;
-    if (currentView === 'favorites') matchView = p.favorite;
-    else if (currentView === 'category') matchView = p.cat === selCat;
-    // 'all' e dashboard-com-busca: sem filtro de view
+  var list = procs;
+  if (currentView === 'favorites') list = getFavorites();
+  else if (currentView === 'category') list = procs.filter(function(p) { return p.cat === selCat; });
 
-    var matchStatus = !statusFilter || p.status === statusFilter;
+  if (statusFilter) list = list.filter(function(p) { return p.status === statusFilter; });
+  if (q) list = list.filter(function(p) { return (p.title||'').toLowerCase().indexOf(q) !== -1; });
 
-    var matchQ = !q
-      || p.title.toLowerCase().indexOf(q) !== -1
-      || p.steps.some(function(s) { return s.text.toLowerCase().indexOf(q) !== -1; })
-      || (p.obs && p.obs.toLowerCase().indexOf(q) !== -1)
-      || (p.client && p.client.name && p.client.name.toLowerCase().indexOf(q) !== -1);
+  var countElG = document.getElementById('content-count');
+  if (countElG) countElG.textContent = list.length + ' procedimento' + (list.length !== 1 ? 's' : '');
 
-    return matchView && matchStatus && matchQ;
-  });
-
-  var countEl3 = document.getElementById('content-count');
-  if (countEl3) countEl3.textContent = filtered.length + ' procedimento' + (filtered.length !== 1 ? 's' : '');
-
-  if (!filtered.length) {
-    gridEl.innerHTML = '<div class="empty-state">'
-      + '<i class="ti ti-search"></i>'
-      + '<p>Nenhum procedimento encontrado.<br>'
-      + (!q && currentView !== 'favorites' ? '<button class="see-link" onclick="openModal()">Criar novo →</button>' : 'Tente outra busca ou filtro.')
-      + '</p></div>';
-    return;
-  }
-
-  var html = '';
-  for (var i = 0; i < filtered.length; i++) {
-    html += renderCardHtml(filtered[i]);
-  }
-  gridEl.innerHTML = html;
+  renderGrid(gridEl, list);
 }
 
-function renderCardHtml(p) {
-  var meta = getCatMeta(p.cat);
-  var statusLabel = STATUS_LABELS[p.status] || STATUS_LABELS.pendente;
-  var statusIcon = STATUS_ICONS[p.status] || STATUS_ICONS.pendente;
-  var statusClass = 'badge-status-' + (p.status || 'pendente');
+function renderGrid(container, list) {
+  if (!container) return;
+  if (!list.length) {
+    container.innerHTML = '<div class="empty-state"><i class="ti ti-file-off" style="font-size:40px;color:var(--text-3)"></i><p>Nenhum procedimento encontrado.</p></div>';
+    return;
+  }
+  var html = '';
+  for (var i = 0; i < list.length; i++) {
+    html += renderProcCard(list[i]);
+  }
+  container.innerHTML = html;
+}
 
-  return '<div class="proc-card" id="card-' + p.id + '">'
+function renderProcCard(p) {
+  var catMeta  = getCatMeta(p.cat);
+  var badgeStyle = getBadgeStyle(p.cat);
+  var statusIcon  = STATUS_ICONS[p.status]  || 'ti-circle-dashed';
+  var statusLabel = STATUS_LABELS[p.status] || p.status;
+  return '<div class="proc-card" onclick="viewProc(' + p.id + ')">'
     + '<div class="proc-card-top">'
-    + '<div class="proc-title-wrap">'
-    + '<div>'
-    + '<div class="proc-title">' + esc(p.title) + '</div>'
     + '<div class="proc-badges">'
-    + '<span class="badge" style="' + getBadgeStyle(p.cat) + '">'
-    + '<i class="ti ' + meta.icon + '" style="font-size:12px"></i> ' + esc(meta.label)
-    + '</span>'
-    + '<span class="badge ' + statusClass + '">'
-    + '<i class="ti ' + statusIcon + '" style="font-size:12px"></i> ' + statusLabel
-    + '</span>'
+    + '<span class="badge" style="' + badgeStyle + '"><i class="ti ' + catMeta.icon + '"></i> ' + esc(catMeta.label) + '</span>'
+    + '<span class="badge badge-status ' + p.status + '"><i class="ti ' + statusIcon + '"></i> ' + esc(statusLabel) + '</span>'
     + '</div>'
-    + '</div>'
-    + '</div>'
-    + '<div class="proc-actions">'
-    + '<button class="icon-btn fav' + (p.favorite ? ' active' : '') + '" onclick="toggleFavorite(' + p.id + ', event)" title="Favoritar">'
+    + '<button class="fav-btn ' + (p.favorite ? 'active' : '') + '" onclick="event.stopPropagation(); toggleFavorite(' + p.id + ')" title="' + (p.favorite ? 'Remover favorito' : 'Favoritar') + '">'
     + '<i class="ti ' + (p.favorite ? 'ti-star-filled' : 'ti-star') + '"></i></button>'
-    + '<button class="icon-btn" onclick="openEdit(' + p.id + ')" title="Editar"><i class="ti ti-edit"></i></button>'
-    + '<button class="icon-btn del" onclick="deleteProc(' + p.id + ')" title="Excluir"><i class="ti ti-trash"></i></button>'
     + '</div>'
-    + '</div>'
-    + '<div class="proc-steps-preview">'
-    + p.steps.length + ' passo' + (p.steps.length !== 1 ? 's' : '') + ' · '
-    + '<button class="see-link" onclick="openView(' + p.id + ')">ver procedimento →</button>'
-    + '</div>'
+    + '<div class="proc-title">' + esc(p.title) + '</div>'
+    + '<div class="proc-meta"><i class="ti ti-list-numbers"></i> ' + p.steps.length + ' passo' + (p.steps.length !== 1 ? 's' : '') + '</div>'
     + '</div>';
 }
 
-// ── DASHBOARD ────────────────────────────────────────────────────────────────
+// ── DASHBOARD ─────────────────────────────────────────────────────────────────
 
 function renderDashboard() {
-  var total = procs.length;
-  var resolvido = procs.filter(function(p) { return p.status === 'resolvido'; }).length;
-  var andamento = procs.filter(function(p) { return p.status === 'andamento'; }).length;
-  var pendente  = procs.filter(function(p) { return p.status === 'pendente'; }).length;
+  updateAlertBadge();
 
-  setText('m-total', total);
-  setText('m-resolvido', resolvido);
-  setText('m-andamento', andamento);
-  setText('m-pendente', pendente);
-
-  // recentes
-  var recentEl = document.getElementById('recent-list');
-  if (recentEl) {
-    if (!accessHistory.length) {
-      recentEl.innerHTML = '<div class="mini-empty">Nenhum acesso registrado ainda.</div>';
-    } else {
-      var html = '';
-      var shown = accessHistory.slice(0, 5);
-      for (var i = 0; i < shown.length; i++) {
-        var h = shown[i];
-        var exists = findProc(h.procId);
-        if (!exists) continue;
-        html += '<div class="mini-item" onclick="openView(' + h.procId + ')">'
-          + '<i class="ti ti-file-text" style="color:var(--accent)"></i>'
-          + '<span class="mini-item-title">' + esc(h.title) + '</span>'
-          + '<span class="mini-item-meta">' + formatRelativeTime(h.timestamp) + '</span>'
-          + '</div>';
-      }
-      recentEl.innerHTML = html || '<div class="mini-empty">Nenhum acesso registrado ainda.</div>';
-    }
+  var metricsEl = document.getElementById('metrics');
+  if (metricsEl) {
+    var total    = procs.length;
+    var resolved = procs.filter(function(p) { return p.status === 'resolvido'; }).length;
+    var pending  = procs.filter(function(p) { return p.status === 'pendente'; }).length;
+    var favs     = getFavorites().length;
+    metricsEl.innerHTML =
+      '<div class="metric-card"><div class="metric-value">' + total    + '</div><div class="metric-label">Total</div></div>'
+    + '<div class="metric-card"><div class="metric-value">' + resolved + '</div><div class="metric-label">Resolvidos</div></div>'
+    + '<div class="metric-card"><div class="metric-value">' + pending  + '</div><div class="metric-label">A fazer</div></div>'
+    + '<div class="metric-card"><div class="metric-value">' + favs     + '</div><div class="metric-label">Favoritos</div></div>';
   }
 
-  // favoritos
-  var favEl = document.getElementById('fav-list');
-  if (favEl) {
-    var favs = getFavorites();
-    if (!favs.length) {
-      favEl.innerHTML = '<div class="mini-empty">Nenhum favorito ainda. Clique na estrela de um procedimento.</div>';
-    } else {
-      var fhtml = '';
-      for (var j = 0; j < favs.length; j++) {
-        var f = favs[j];
-        var fmeta = getCatMeta(f.cat);
-        fhtml += '<div class="mini-item" onclick="openView(' + f.id + ')">'
-          + '<i class="ti ti-star-filled" style="color:var(--star)"></i>'
-          + '<span class="mini-item-title">' + esc(f.title) + '</span>'
-          + '<span class="mini-item-meta">' + esc(fmeta.label) + '</span>'
-          + '</div>';
-      }
-      favEl.innerHTML = fhtml;
-    }
-  }
-
-  // visão por categoria
-  var catGrid = document.getElementById('cat-overview-grid');
-  if (catGrid) {
-    var chtml = '';
-    for (var k = 0; k < cats.length; k++) {
-      var c = cats[k];
+  var catGridEl = document.getElementById('cat-overview-grid');
+  if (catGridEl) {
+    var html = '';
+    for (var i = 0; i < cats.length; i++) {
+      var c = cats[i];
       var count = procs.filter(function(p) { return p.cat === c.id; }).length;
-      chtml += '<div class="proc-card" style="cursor:pointer" onclick="setView(\'category\',\'' + c.id + '\')">'
-        + '<div class="proc-card-top">'
-        + '<div class="proc-title-wrap"><div>'
-        + '<div class="proc-title"><i class="ti ' + c.icon + '" style="color:var(--accent);margin-right:6px"></i>' + esc(c.label) + '</div>'
-        + '</div></div>'
-        + '</div>'
-        + '<div class="proc-steps-preview">' + count + ' procedimento' + (count !== 1 ? 's' : '') + '</div>'
+      html += '<div class="cat-overview-item" onclick="setView(\'category\',\'' + c.id + '\')">'
+        + '<i class="ti ' + c.icon + '"></i>'
+        + '<span>' + esc(c.label) + '</span>'
+        + '<b>' + count + '</b>'
         + '</div>';
     }
-    catGrid.innerHTML = chtml;
+    catGridEl.innerHTML = html;
   }
 
-  updateAlertBadge();
+  var recentEl = document.getElementById('recent-procs-list');
+  if (recentEl) {
+    var recent = procs.slice(0, 5);
+    if (!recent.length) {
+      recentEl.innerHTML = '<div class="mini-empty">Nenhum procedimento cadastrado.</div>';
+    } else {
+      var rhtml = '';
+      for (var j = 0; j < recent.length; j++) {
+        var p = recent[j];
+        rhtml += '<div class="mini-item" onclick="viewProc(' + p.id + ')">'
+          + '<i class="ti ' + (getCatMeta(p.cat).icon) + '" style="color:var(--text-3)"></i>'
+          + '<span>' + esc(p.title) + '</span>'
+          + '</div>';
+      }
+      recentEl.innerHTML = rhtml;
+    }
+  }
+
+  var histEl = document.getElementById('recent-history-list');
+  if (histEl) {
+    var recent2 = accessHistory.slice(0, 5);
+    if (!recent2.length) {
+      histEl.innerHTML = '<div class="mini-empty">Nenhum acesso registrado.</div>';
+    } else {
+      var hhtml = '';
+      for (var k = 0; k < recent2.length; k++) {
+        var h = recent2[k];
+        hhtml += '<div class="mini-item" onclick="viewProc(' + h.procId + ')">'
+          + '<i class="ti ti-clock" style="color:var(--text-3)"></i>'
+          + '<span>' + esc(h.title) + '</span>'
+          + '<span class="mini-time">' + formatRelativeTime(h.timestamp) + '</span>'
+          + '</div>';
+      }
+      histEl.innerHTML = hhtml;
+    }
+  }
 }
 
-function setText(id, val) {
-  var el = document.getElementById(id);
-  if (el) el.textContent = val;
-}
+// ── HISTÓRICO VIEW ────────────────────────────────────────────────────────────
 
-// ── HISTÓRICO (VIEW) ─────────────────────────────────────────────────────────
-
-function renderHistory() {
-  var el = document.getElementById('history-list');
-  if (!el) return;
-
+function renderHistoryView() {
+  var listEl = document.getElementById('history-list');
+  if (!listEl) return;
   if (!accessHistory.length) {
-    el.innerHTML = '<div class="empty-state"><i class="ti ti-history"></i><p>Nenhum acesso registrado ainda.<br>Abra um procedimento para começar o histórico.</p></div>';
+    listEl.innerHTML = '<div class="empty-state"><i class="ti ti-history-off" style="font-size:40px;color:var(--text-3)"></i><p>Nenhum acesso registrado.</p></div>';
     return;
   }
-
   var html = '';
   for (var i = 0; i < accessHistory.length; i++) {
     var h = accessHistory[i];
-    var exists = findProc(h.procId);
-    var meta = getCatMeta(h.cat);
-    html += '<div class="mini-item"' + (exists ? ' onclick="openView(' + h.procId + ')"' : ' style="opacity:0.5;cursor:default"') + '>'
-      + '<i class="ti ' + meta.icon + '" style="color:var(--accent)"></i>'
-      + '<span class="mini-item-title">' + esc(h.title) + (!exists ? ' (removido)' : '') + '</span>'
-      + '<span class="mini-item-meta">' + formatRelativeTime(h.timestamp) + '</span>'
+    html += '<div class="mini-item history-row" onclick="viewProc(' + h.procId + ')">'
+      + '<i class="ti ti-clock" style="color:var(--text-3)"></i>'
+      + '<span>' + esc(h.title) + '</span>'
+      + '<span class="mini-time">' + formatRelativeTime(h.timestamp) + '</span>'
       + '</div>';
   }
-  el.innerHTML = html;
+  listEl.innerHTML = html;
 }
 
-// ── FAVORITOS / STATUS ───────────────────────────────────────────────────────
+async function clearHistory() {
+  if (!confirm('Limpar todo o histórico de acessos?')) return;
+  try {
+    await apiFetch('/api/history', { method: 'DELETE' });
+    accessHistory = [];
+    render();
+  } catch(e) { showToast('Erro ao limpar histórico.'); }
+}
 
-function toggleFavorite(id, e) {
-  if (e) e.stopPropagation();
+// ── VER PROCEDIMENTO ──────────────────────────────────────────────────────────
+
+async function viewProc(id) {
+  var p = findProc(id);
+  if (!p) return;
+  await logHistory(id);
+
+  var catMeta    = getCatMeta(p.cat);
+  var badgeStyle = getBadgeStyle(p.cat);
+  var statusIcon  = STATUS_ICONS[p.status]  || 'ti-circle-dashed';
+  var statusLabel = STATUS_LABELS[p.status] || p.status;
+
+  var titleEl = document.getElementById('view-title');
+  if (titleEl) titleEl.textContent = p.title;
+
+  var metaEl = document.getElementById('view-meta');
+  if (metaEl) {
+    metaEl.innerHTML =
+      '<span class="badge" style="' + badgeStyle + '"><i class="ti ' + catMeta.icon + '"></i> ' + esc(catMeta.label) + '</span>'
+    + '<span class="badge badge-status ' + p.status + '"><i class="ti ' + statusIcon + '"></i> ' + esc(statusLabel) + '</span>';
+  }
+
+  var stepsEl = document.getElementById('view-steps');
+  if (stepsEl) {
+    var shtml = '<ol class="view-steps-list">';
+    for (var i = 0; i < p.steps.length; i++) {
+      var s = p.steps[i];
+      shtml += '<li><span>' + esc(s.text || s) + '</span>';
+      var imgs = s.images || [];
+      if (imgs.length) {
+        shtml += '<div class="step-imgs-view">';
+        for (var j = 0; j < imgs.length; j++) {
+          shtml += '<img src="' + imgs[j] + '" class="step-img-view" onclick="openLightbox(this.src)" alt="imagem ' + (j+1) + '" />';
+        }
+        shtml += '</div>';
+      }
+      shtml += '</li>';
+    }
+    shtml += '</ol>';
+    stepsEl.innerHTML = shtml;
+  }
+
+  var obsEl = document.getElementById('view-obs');
+  if (obsEl) {
+    obsEl.style.display = p.obs ? '' : 'none';
+    if (p.obs) obsEl.querySelector('.view-obs-text').textContent = p.obs;
+  }
+
+  var clientEl = document.getElementById('view-client');
+  if (clientEl) {
+    var hasClient = p.client && (p.client.name || p.client.phone);
+    clientEl.style.display = hasClient ? '' : 'none';
+    if (hasClient) {
+      var cn = document.getElementById('view-client-name');
+      var cp = document.getElementById('view-client-phone');
+      if (cn) cn.textContent = p.client.name || '—';
+      if (cp) cp.textContent = p.client.phone || '—';
+    }
+  }
+
+  var editBtn = document.getElementById('view-edit-btn');
+  if (editBtn) editBtn.setAttribute('data-proc-id', id);
+
+  var delBtn = document.getElementById('view-del-btn');
+  if (delBtn) delBtn.setAttribute('data-proc-id', id);
+
+  var favBtn = document.getElementById('view-fav-btn');
+  if (favBtn) {
+    favBtn.setAttribute('data-proc-id', id);
+    favBtn.innerHTML = p.favorite
+      ? '<i class="ti ti-star-filled"></i> Desfavoritar'
+      : '<i class="ti ti-star"></i> Favoritar';
+    favBtn.className = 'icon-btn' + (p.favorite ? ' active-fav' : '');
+  }
+
+  var modal = document.getElementById('view-modal');
+  if (modal) modal.style.display = 'flex';
+}
+
+function viewEditFromModal() {
+  var btn = document.getElementById('view-edit-btn');
+  if (!btn) return;
+  var id = btn.getAttribute('data-proc-id');
+  closeModal('view-modal');
+  openEditModal(parseInt(id) || id);
+}
+
+function viewDeleteFromModal() {
+  var btn = document.getElementById('view-del-btn');
+  if (!btn) return;
+  var id = btn.getAttribute('data-proc-id');
+  closeModal('view-modal');
+  deleteProc(id);
+}
+
+async function viewToggleFavFromModal() {
+  var btn = document.getElementById('view-fav-btn');
+  if (!btn) return;
+  var id = btn.getAttribute('data-proc-id');
+  await toggleFavorite(id);
+  var p = findProc(id);
+  if (!p) return;
+  btn.innerHTML = p.favorite
+    ? '<i class="ti ti-star-filled"></i> Desfavoritar'
+    : '<i class="ti ti-star"></i> Favoritar';
+  btn.className = 'icon-btn' + (p.favorite ? ' active-fav' : '');
+}
+
+// ── FAVORITOS ─────────────────────────────────────────────────────────────────
+
+async function toggleFavorite(id) {
   var p = findProc(id);
   if (!p) return;
   p.favorite = !p.favorite;
-  saveProcs();
+  try {
+    await apiFetch('/api/procedures/' + id, { method: 'PUT', body: JSON.stringify({ favorite: p.favorite }) });
+  } catch(e) { showToast('Erro ao atualizar favorito.'); p.favorite = !p.favorite; return; }
   render();
 }
 
-// ── MODAL VISUALIZAÇÃO ───────────────────────────────────────────────────────
+// ── MODAL NOVO/EDITAR ─────────────────────────────────────────────────────────
 
-function openView(id) {
-  var p = findProc(id);
-  if (!p) return;
-
-  logHistory(id);
-
-  var meta = getCatMeta(p.cat);
-  var statusLabel = STATUS_LABELS[p.status] || STATUS_LABELS.pendente;
-  var statusIcon = STATUS_ICONS[p.status] || STATUS_ICONS.pendente;
-  var statusClass = 'badge-status-' + (p.status || 'pendente');
-
-  var stepsHtml = '';
-  for (var i = 0; i < p.steps.length; i++) {
-    var s = p.steps[i];
-    var imgsHtml = '';
-    if (s.images && s.images.length) {
-      for (var j = 0; j < s.images.length; j++) {
-        imgsHtml += '<img src="' + s.images[j] + '" onclick="openLightbox(\'' + s.images[j].replace(/'/g,"\\'") + '\')" alt="Imagem do passo ' + (i+1) + '" />';
-      }
-    }
-    stepsHtml += '<div class="view-step">'
-      + '<div class="step-num">' + (i + 1) + '</div>'
-      + '<div class="view-step-body">'
-      + '<div class="step-text">' + esc(s.text) + '</div>'
-      + (imgsHtml ? '<div class="step-images">' + imgsHtml + '</div>' : '')
-      + '</div>'
-      + '</div>';
-  }
-
-  var obsHtml = p.obs ? '<div class="obs-box"><strong>Obs:</strong> ' + esc(p.obs) + '</div>' : '';
-
-  var contactHtml = '';
-  if (p.client && (p.client.name || p.client.phone)) {
-    contactHtml = '<div class="contact-box">'
-      + (p.client.name ? '<span><i class="ti ti-user"></i>' + esc(p.client.name) + '</span>' : '')
-      + (p.client.phone ? '<span><i class="ti ti-phone"></i>' + esc(p.client.phone) + '</span>' : '')
-      + '</div>';
-  }
-
-  var html = '<div id="print-area">'
-    + '<div class="view-header">'
-    + '<div>'
-    + '<div class="view-title">' + esc(p.title) + '</div>'
-    + '<div class="view-badges">'
-    + '<span class="badge" style="' + getBadgeStyle(p.cat) + '">'
-    + '<i class="ti ' + meta.icon + '" style="font-size:12px"></i> ' + esc(meta.label)
-    + '</span>'
-    + '<span class="badge ' + statusClass + '">'
-    + '<i class="ti ' + statusIcon + '" style="font-size:12px"></i> ' + statusLabel
-    + '</span>'
-    + '</div>'
-    + '</div>'
-    + '<div class="view-actions">'
-    + '<button class="icon-btn fav' + (p.favorite ? ' active' : '') + '" onclick="toggleFavorite(' + p.id + ');reopenView(' + p.id + ')" title="Favoritar">'
-    + '<i class="ti ' + (p.favorite ? 'ti-star-filled' : 'ti-star') + '"></i></button>'
-    + '<button class="icon-btn" onclick="printProc()" title="Imprimir / exportar PDF"><i class="ti ti-printer"></i></button>'
-    + '<button class="icon-btn" onclick="closeModal(\'view-modal\');openEdit(' + p.id + ')" title="Editar"><i class="ti ti-edit"></i></button>'
-    + '<button class="icon-btn" onclick="closeModal(\'view-modal\')" title="Fechar"><i class="ti ti-x"></i></button>'
-    + '</div>'
-    + '</div>'
-    + '<div class="view-steps">' + stepsHtml + '</div>'
-    + obsHtml
-    + contactHtml
-    + '</div>';
-
-  document.getElementById('view-modal-content').innerHTML = html;
-  document.getElementById('view-modal').style.display = 'flex';
-}
-
-function reopenView(id) {
-  openView(id);
-}
-
-function printProc() {
-  window.print();
-}
-
-function openLightbox(src) {
-  var lb = document.createElement('div');
-  lb.className = 'image-lightbox';
-  lb.onclick = function() { lb.remove(); };
-  var img = document.createElement('img');
-  img.src = src;
-  lb.appendChild(img);
-  document.body.appendChild(lb);
-}
-
-// ── MODAL PROCEDIMENTO (CRIAR/EDITAR) ────────────────────────────────────────
-
-function populateCatSelect() {
-  var sel = document.getElementById('f-cat');
-  if (!sel) return;
-  var html = '';
-  for (var i = 0; i < cats.length; i++) {
-    html += '<option value="' + cats[i].id + '">' + esc(cats[i].label) + '</option>';
-  }
-  sel.innerHTML = html;
-}
-
-function openModal() {
+function openNewModal() {
   editId = null;
-  stepCount = 0;
   pendingStepImages = {};
-
+  stepCount = 0;
   setVal('f-title', '');
   setVal('f-obs', '');
   setVal('f-client-name', '');
   setVal('f-client-phone', '');
-  var se = document.getElementById('steps-editor');
-  if (se) se.innerHTML = '';
-
-  var mt = document.getElementById('modal-title');
-  if (mt) mt.textContent = 'Novo procedimento';
-
-  populateCatSelect();
-  setVal('f-status', 'pendente');
+  var catEl = document.getElementById('f-cat');
+  var statusEl = document.getElementById('f-status');
+  if (catEl) {
+    catEl.innerHTML = cats.map(function(c) { return '<option value="' + c.id + '">' + esc(c.label) + '</option>'; }).join('');
+    if (selCat) catEl.value = selCat;
+  }
+  if (statusEl) statusEl.value = 'pendente';
+  document.getElementById('steps-editor').innerHTML = '';
   addStep();
-
   var modal = document.getElementById('proc-modal');
   if (modal) modal.style.display = 'flex';
+  var h3 = modal ? modal.querySelector('.modal-header h3') : null;
+  if (h3) h3.textContent = 'Novo Procedimento';
 }
 
-function openEdit(id) {
+function openEditModal(id) {
   var p = findProc(id);
   if (!p) return;
-
-  editId = id;
-  stepCount = 0;
+  editId = p.id;
   pendingStepImages = {};
-
-  var mt = document.getElementById('modal-title');
-  if (mt) mt.textContent = 'Editar procedimento';
-
+  stepCount = 0;
   setVal('f-title', p.title);
   setVal('f-obs', p.obs || '');
-  setVal('f-client-name', (p.client && p.client.name) || '');
-  setVal('f-client-phone', (p.client && p.client.phone) || '');
-
-  var se = document.getElementById('steps-editor');
-  if (se) se.innerHTML = '';
-
-  populateCatSelect();
-  setVal('f-cat', p.cat);
-  setVal('f-status', p.status || 'pendente');
-
+  setVal('f-client-name', p.client ? p.client.name : '');
+  setVal('f-client-phone', p.client ? p.client.phone : '');
+  var catEl = document.getElementById('f-cat');
+  var statusEl = document.getElementById('f-status');
+  if (catEl) {
+    catEl.innerHTML = cats.map(function(c) { return '<option value="' + c.id + '">' + esc(c.label) + '</option>'; }).join('');
+    catEl.value = p.cat || 'geral';
+  }
+  if (statusEl) statusEl.value = p.status || 'pendente';
+  document.getElementById('steps-editor').innerHTML = '';
   for (var j = 0; j < p.steps.length; j++) {
     addStep(p.steps[j].text, p.steps[j].images);
   }
-
   var modal = document.getElementById('proc-modal');
   if (modal) modal.style.display = 'flex';
+  var h3 = modal ? modal.querySelector('.modal-header h3') : null;
+  if (h3) h3.textContent = 'Editar Procedimento';
 }
 
 function setVal(id, val) {
@@ -741,8 +697,6 @@ function addStep(text, images) {
 function handleStepImage(event, rowId) {
   var files = event.target.files;
   if (!files || !files.length) return;
-
-  var remaining = files.length;
   for (var i = 0; i < files.length; i++) {
     var file = files[i];
     var reader = new FileReader();
@@ -792,7 +746,7 @@ function renumberSteps() {
   }
 }
 
-function saveProc() {
+async function saveProcForm() {
   var title = (document.getElementById('f-title').value || '').trim();
   if (!title) { showToast('Informe o título do procedimento.'); return; }
 
@@ -803,56 +757,51 @@ function saveProc() {
     var text = input.value.trim();
     if (!text) continue;
     var rowId = rows[i].id;
-    steps.push({
-      text: text,
-      images: (pendingStepImages[rowId] || []).slice()
-    });
+    steps.push({ text: text, images: (pendingStepImages[rowId] || []).slice() });
   }
 
   if (!steps.length) { showToast('Adicione pelo menos um passo.'); return; }
 
-  var catEl = document.getElementById('f-cat');
+  var catEl    = document.getElementById('f-cat');
   var statusEl = document.getElementById('f-status');
-  var obsEl = document.getElementById('f-obs');
-  var clientName = document.getElementById('f-client-name').value.trim();
+  var obsEl    = document.getElementById('f-obs');
+  var clientName  = document.getElementById('f-client-name').value.trim();
   var clientPhone = document.getElementById('f-client-phone').value.trim();
 
   var proc = {
-    id:       editId || Date.now(),
-    title:    title,
-    cat:      catEl ? catEl.value : 'geral',
-    status:   statusEl ? statusEl.value : 'pendente',
-    steps:    steps,
-    obs:      obsEl ? obsEl.value.trim() : '',
-    client:   { name: clientName, phone: clientPhone },
-    favorite: false
+    id:     editId,
+    title:  title,
+    cat:    catEl ? catEl.value : 'geral',
+    status: statusEl ? statusEl.value : 'pendente',
+    steps:  steps,
+    obs:    obsEl ? obsEl.value.trim() : '',
+    client: { name: clientName, phone: clientPhone }
   };
 
-  if (editId) {
-    var existing = findProc(editId);
-    proc.favorite = existing ? existing.favorite : false;
-    for (var k = 0; k < procs.length; k++) {
-      if (procs[k].id === editId) { procs[k] = proc; break; }
+  try {
+    var isNew = !editId;
+    if (!isNew) {
+      var existing = findProc(editId);
+      proc.favorite = existing ? existing.favorite : false;
     }
-    showToast('Procedimento atualizado.');
-  } else {
-    procs.unshift(proc);
-    showToast('Procedimento salvo.');
+    await saveProc(proc, isNew);
+    showToast(isNew ? 'Procedimento salvo.' : 'Procedimento atualizado.');
+    closeModal('proc-modal');
+    render();
+  } catch(e) {
+    showToast('Erro ao salvar procedimento.');
   }
-
-  saveProcs();
-  closeModal('proc-modal');
-  render();
 }
 
-function deleteProc(id) {
+async function deleteProc(id) {
   if (!confirm('Excluir este procedimento? Essa ação não pode ser desfeita.')) return;
-  procs = procs.filter(function(p) { return p.id !== id; });
-  history = accessHistory.filter(function(h) { return h.procId !== id; });
-  saveProcs();
-  saveHistory();
-  render();
-  showToast('Procedimento excluído.');
+  try {
+    await apiFetch('/api/procedures/' + id, { method: 'DELETE' });
+    procs = procs.filter(function(p) { return String(p.id) !== String(id); });
+    accessHistory = accessHistory.filter(function(h) { return String(h.procId) !== String(id); });
+    render();
+    showToast('Procedimento excluído.');
+  } catch(e) { showToast('Erro ao excluir.'); }
 }
 
 // ── MODAL CATEGORIAS ──────────────────────────────────────────────────────────
@@ -874,431 +823,96 @@ function renderCatManage() {
     html += '<div class="cat-manage-item' + (c.fixed ? ' fixed' : '') + '">'
       + '<i class="ti ' + c.icon + ' cat-icon"></i>'
       + '<span>' + esc(c.label) + '</span>'
-      + '<button class="cat-del-btn" onclick="deleteCat(\'' + c.id + '\')" title="Remover"><i class="ti ti-x"></i></button>'
+      + (!c.fixed ? '<button class="cat-del-btn" onclick="deleteCat(\'' + c.id + '\')" title="Remover"><i class="ti ti-x"></i></button>' : '')
       + '</div>';
   }
   list.innerHTML = html;
 }
 
-function addCat() {
+async function addCat() {
   var input = document.getElementById('new-cat-input');
   if (!input) return;
   var label = input.value.trim();
   if (!label) return;
 
   for (var i = 0; i < cats.length; i++) {
-    if (cats[i].label.toLowerCase() === label.toLowerCase()) {
-      showToast('Categoria já existe.');
-      return;
-    }
+    if (cats[i].label.toLowerCase() === label.toLowerCase()) { showToast('Categoria já existe.'); return; }
   }
 
   var id   = label.toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-]/g, '') + '-' + Date.now();
   var icon = CUSTOM_ICONS[cats.length % CUSTOM_ICONS.length];
-  cats.push({ id: id, label: label, icon: icon, fixed: false });
 
-  saveCats();
-  input.value = '';
-  renderCatManage();
-  renderSidebar();
-  showToast('Categoria "' + label + '" adicionada.');
+  try {
+    var created = await saveCat({ id: id, label: label, icon: icon, fixed: false });
+    cats.push(created);
+    input.value = '';
+    renderCatManage();
+    renderSidebar();
+    showToast('Categoria "' + label + '" adicionada.');
+  } catch(e) { showToast('Erro ao adicionar categoria.'); }
 }
 
-function deleteCat(id) {
-  if (cats.length <= 1) {
-    showToast('É preciso manter ao menos uma categoria.');
-    return;
-  }
-
-  var inUse = procs.some(function(p) { return p.cat === id; });
-  var fallback = cats.filter(function(c) { return c.id !== id; })[0];
-
-  if (inUse) {
-    if (!confirm('Existem procedimentos nessa categoria. Mover para "' + fallback.label + '"?')) return;
-    for (var j = 0; j < procs.length; j++) {
-      if (procs[j].cat === id) procs[j].cat = fallback.id;
-    }
-    saveProcs();
-  }
-
-  cats = cats.filter(function(c) { return c.id !== id; });
-  if (currentView === 'category' && selCat === id) {
-    currentView = 'dashboard';
-    selCat = null;
-  }
-  saveCats();
-  renderCatManage();
-  render();
+async function deleteCat(id) {
+  var cat = getCatMeta(id);
+  if (cat.fixed) { showToast('Categoria padrão não pode ser removida.'); return; }
+  if (!confirm('Remover a categoria "' + cat.label + '"?')) return;
+  try {
+    await apiFetch('/api/categories/' + id, { method: 'DELETE' });
+    cats = cats.filter(function(c) { return c.id !== id; });
+    renderCatManage();
+    renderSidebar();
+    showToast('Categoria removida.');
+  } catch(e) { showToast('Erro ao remover categoria.'); }
 }
-          
+
+// ── MODAL UTILITÁRIOS ─────────────────────────────────────────────────────────
 
 function closeModal(id) {
-  var el = document.getElementById(id);
-  if (el) el.style.display = 'none';
+  var modal = document.getElementById(id);
+  if (modal) modal.style.display = 'none';
 }
 
-function checkOverlayClose(e, id) {
-  if (e.target && e.target.classList.contains('modal-overlay')) closeModal(id);
+function openLightbox(src) {
+  var existing = document.querySelector('.image-lightbox');
+  if (existing) existing.remove();
+  var lb = document.createElement('div');
+  lb.className = 'image-lightbox';
+  lb.innerHTML = '<div class="lb-bg" onclick="this.parentNode.remove()"></div><img src="' + src + '" />';
+  document.body.appendChild(lb);
 }
 
-function esc(str) {
-  return String(str)
-    .replace(/&/g,  '&amp;')
-    .replace(/</g,  '&lt;')
-    .replace(/>/g,  '&gt;')
-    .replace(/"/g,  '&quot;')
-    .replace(/'/g,  '&#39;');
-}
+// ── TOAST ─────────────────────────────────────────────────────────────────────
 
-var toastTimer;
 function showToast(msg) {
   var t = document.getElementById('toast');
   if (!t) return;
   t.textContent = msg;
-  t.classList.add('show');
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(function() { t.classList.remove('show'); }, 2500);
+  t.classList.add('visible');
+  setTimeout(function() { t.classList.remove('visible'); }, 2800);
 }
 
-function toggleSidebar() {
-  var sb = document.getElementById('sidebar');
-  var ov = document.getElementById('sidebar-overlay');
-  if (sb) sb.classList.toggle('open');
-  if (ov) ov.classList.toggle('visible');
+// ── SIDEBAR MOBILE ────────────────────────────────────────────────────────────
+
+function openSidebar() {
+  var sb = document.querySelector('.sidebar');
+  var ov = document.querySelector('.overlay-bg');
+  if (sb) sb.classList.add('open');
+  if (ov) ov.classList.add('visible');
 }
 
 function closeSidebar() {
-  var sb = document.getElementById('sidebar');
-  var ov = document.getElementById('sidebar-overlay');
+  var sb = document.querySelector('.sidebar');
+  var ov = document.querySelector('.overlay-bg');
   if (sb) sb.classList.remove('open');
   if (ov) ov.classList.remove('visible');
 }
 
-
-
-var STORAGE_NOTES = 'suporte_notes_v1';
-var notes = [];
-var currentNoteId = null;
-var autoSaveTimer = null;
-var olCounters = {}; 
-
-function loadNotes() {
-  var raw = storageGet(STORAGE_NOTES);
-  if (raw) {
-    try { notes = JSON.parse(raw); } catch(e) { notes = []; }
-  } else {
-    notes = [];
-  }
-}
-
-function saveNotes() {
-  storageSet(STORAGE_NOTES, JSON.stringify(notes));
-}
-
-function findNote(id) {
-  return notes.find(function(n) { return n.id === id; }) || null;
-}
-
-function createNote() {
-  var note = {
-    id: Date.now(),
-    title: '',
-    blocks: [],
-    pinned: false,
-    createdAt: Date.now(),
-    updatedAt: Date.now()
-  };
-  notes.unshift(note);
-  saveNotes();
-  renderNotesView();
-  openNote(note.id);
-}
-
-function deleteCurrentNote() {
-  if (!currentNoteId) return;
-  if (!confirm('Excluir esta anotação? Essa ação não pode ser desfeita.')) return;
-  notes = notes.filter(function(n) { return n.id !== currentNoteId; });
-  saveNotes();
-  currentNoteId = null;
-  renderNotesView();
-}
-
-function toggleNotePin() {
-  if (!currentNoteId) return;
-  var note = findNote(currentNoteId);
-  if (!note) return;
-  note.pinned = !note.pinned;
-  saveNotes();
-  renderNotesList();
-  updatePinBtn(note.pinned);
-}
-
-function updatePinBtn(pinned) {
-  var btn = document.getElementById('note-pin-btn');
-  if (!btn) return;
-  btn.style.color = pinned ? 'var(--accent)' : '';
-  btn.title = pinned ? 'Desafixar' : 'Fixar';
-}
-
-function openNote(id) {
-  currentNoteId = id;
-  var note = findNote(id);
-  if (!note) return;
-
-  document.getElementById('notes-empty-state').style.display = 'none';
-  document.getElementById('notes-editor').style.display = 'flex';
-
-  document.getElementById('note-title-input').value = note.title;
-  updatePinBtn(note.pinned);
-  updateNoteMeta(note);
-  renderBlocks(note.blocks);
-  renderNotesList();
-}
-
-function updateNoteMeta(note) {
-  var el = document.getElementById('note-meta');
-  if (!el) return;
-  var d = new Date(note.updatedAt);
-  el.textContent = 'Atualizado ' + formatRelativeTime(note.updatedAt) + ' · ' + d.toLocaleDateString('pt-BR');
-}
-
-function renderNotesList() {
-  var container = document.getElementById('notes-list-sidebar');
-  if (!container) return;
-
-  var sorted = notes.slice().sort(function(a, b) {
-    if (a.pinned && !b.pinned) return -1;
-    if (!a.pinned && b.pinned) return 1;
-    return b.updatedAt - a.updatedAt;
-  });
-
-  if (!sorted.length) {
-    container.innerHTML = '<div class="notes-empty-sidebar">Nenhuma anotação ainda.<br>Clique em "+ Nova anotação".</div>';
-    return;
-  }
-
-  var html = '';
-  for (var i = 0; i < sorted.length; i++) {
-    var n = sorted[i];
-    var preview = getNotePlainText(n).slice(0, 60) || 'Sem conteúdo...';
-    var active = n.id === currentNoteId ? ' active' : '';
-    html += '<div class="note-list-item' + active + '" onclick="openNote(' + n.id + ')">'
-      + '<div class="note-list-title">'
-      + (n.pinned ? '<i class="ti ti-pin pin-icon"></i>' : '')
-      + esc(n.title || 'Sem título')
-      + '</div>'
-      + '<div class="note-list-preview">' + esc(preview) + '</div>'
-      + '<div class="note-list-date">' + formatRelativeTime(n.updatedAt) + '</div>'
-      + '</div>';
-  }
-  container.innerHTML = html;
-
-  var countEl = document.getElementById('notes-count');
-  if (countEl) countEl.textContent = notes.length;
-}
-
-function getNotePlainText(note) {
-  return (note.blocks || []).map(function(b) { return b.text || ''; }).join(' ').trim();
-}
-
-function renderNotesView() {
-  renderNotesList();
-  if (!currentNoteId || !findNote(currentNoteId)) {
-    document.getElementById('notes-empty-state').style.display = 'flex';
-    document.getElementById('notes-editor').style.display = 'none';
-  }
-}
-
-function renderBlocks(blocks) {
-  var container = document.getElementById('note-blocks');
-  if (!container) return;
-  container.innerHTML = '';
-  olCounters = {};
-  for (var i = 0; i < blocks.length; i++) {
-    appendBlockEl(blocks[i]);
-  }
-}
-
-function appendBlockEl(block) {
-  var container = document.getElementById('note-blocks');
-  if (!container) return;
-
-  if (block.type === 'hr') {
-    var hr = document.createElement('div');
-    hr.className = 'note-block block-hr';
-    hr.dataset.blockId = block.id;
-    hr.dataset.type = 'hr';
-    var del = document.createElement('button');
-    del.className = 'block-del';
-    del.innerHTML = '<i class="ti ti-x"></i>';
-    del.onclick = function() { removeBlock(block.id); };
-    hr.appendChild(del);
-    container.appendChild(hr);
-    return;
-  }
-
-  var div = document.createElement('div');
-  div.className = 'note-block block-' + block.type;
-  div.dataset.blockId = block.id;
-  div.dataset.type = block.type;
-
-  if (block.type === 'ul') {
-    var pre = document.createElement('span');
-    pre.className = 'block-prefix';
-    pre.textContent = '•';
-    div.appendChild(pre);
-  } else if (block.type === 'ol') {
-    if (!olCounters[block.id]) olCounters[block.id] = getOlIndex(block.id);
-    var pre2 = document.createElement('span');
-    pre2.className = 'block-prefix';
-    pre2.textContent = olCounters[block.id] + '.';
-    div.appendChild(pre2);
-  } else if (block.type === 'check') {
-    var chk = document.createElement('input');
-    chk.type = 'checkbox';
-    chk.className = 'block-check-input';
-    chk.checked = !!block.checked;
-    if (block.checked) div.classList.add('done');
-    chk.onchange = (function(bid) {
-      return function(e) {
-        var note = findNote(currentNoteId);
-        if (!note) return;
-        var b = note.blocks.find(function(x) { return x.id === bid; });
-        if (b) {
-          b.checked = e.target.checked;
-          div.classList.toggle('done', e.target.checked);
-          autoSaveNote();
-        }
-      };
-    })(block.id);
-    div.appendChild(chk);
-  }
-
-  var textarea = document.createElement('textarea');
-  textarea.className = 'block-input';
-  textarea.placeholder = getBlockPlaceholder(block.type);
-  textarea.value = block.text || '';
-  textarea.rows = 1;
-  textarea.dataset.blockId = block.id;
-  autoResize(textarea);
-
-  textarea.addEventListener('input', (function(bid) {
-    return function(e) {
-      autoResize(e.target);
-      var note = findNote(currentNoteId);
-      if (!note) return;
-      var b = note.blocks.find(function(x) { return x.id === bid; });
-      if (b) b.text = e.target.value;
-      autoSaveNote();
-    };
-  })(block.id));
-
-  textarea.addEventListener('keydown', function(e) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      insertBlockAfter(block.id, block.type === 'h1' || block.type === 'h2' || block.type === 'h3' ? 'p' : block.type);
-    }
-    if (e.key === 'Backspace' && textarea.value === '') {
-      e.preventDefault();
-      removeBlock(block.id);
-    }
-  });
-
-  div.appendChild(textarea);
-
-  var delBtn = document.createElement('button');
-  delBtn.className = 'block-del';
-  delBtn.innerHTML = '<i class="ti ti-x"></i>';
-  delBtn.onclick = function() { removeBlock(block.id); };
-  div.appendChild(delBtn);
-
-  container.appendChild(div);
-  return div;
-}
-
-function getOlIndex(blockId) {
-  var note = findNote(currentNoteId);
-  if (!note) return 1;
-  var count = 0;
-  for (var i = 0; i < note.blocks.length; i++) {
-    if (note.blocks[i].type === 'ol') count++;
-    if (note.blocks[i].id === blockId) return count;
-  }
-  return count || 1;
-}
-
-function getBlockPlaceholder(type) {
-  var map = {
-    h1: 'Título grande', h2: 'Título', h3: 'Subtítulo',
-    p: 'Escreva algo...', ul: 'Item de lista', ol: 'Item numerado',
-    check: 'Tarefa...', quote: 'Citação...', code: 'Código...',
-    hr: ''
-  };
-  return map[type] || 'Escreva...';
-}
-
-function autoResize(el) {
-  el.style.height = 'auto';
-  el.style.height = el.scrollHeight + 'px';
-}
-
-function insertBlock(type) {
-  var note = findNote(currentNoteId);
-  if (!note) { createNote(); return; }
-  var block = { id: Date.now(), type: type, text: '', checked: false };
-  note.blocks.push(block);
-  saveNotes();
-  var el = appendBlockEl(block);
-  if (el) {
-    var ta = el.querySelector('textarea');
-    if (ta) { ta.focus(); autoResize(ta); }
-  }
-}
-
-function insertBlockAfter(afterId, type) {
-  var note = findNote(currentNoteId);
-  if (!note) return;
-  var idx = note.blocks.findIndex(function(b) { return b.id === afterId; });
-  var block = { id: Date.now(), type: type, text: '', checked: false };
-  if (idx >= 0) note.blocks.splice(idx + 1, 0, block);
-  else note.blocks.push(block);
-  saveNotes();
-  renderBlocks(note.blocks);
-  setTimeout(function() {
-    var el = document.querySelector('[data-block-id="' + block.id + '"] textarea');
-    if (el) { el.focus(); autoResize(el); }
-  }, 0);
-}
-
-function removeBlock(blockId) {
-  var note = findNote(currentNoteId);
-  if (!note) return;
-  note.blocks = note.blocks.filter(function(b) { return b.id !== blockId; });
-  saveNotes();
-  renderBlocks(note.blsocks);
-  var tas = document.querySelectorAll('#note-blocks textarea');
-  if (tas.length) tas[tas.length - 1].focus();
-}
-
-function autoSaveNote() {
-  clearTimeout(autoSaveTimer);
-  autoSaveTimer = setTimeout(function() {
-    var note = findNote(currentNoteId);
-    if (!note) return;
-    note.title = document.getElementById('note-title-input').value;
-    note.updatedAt = Date.now();
-    saveNotes();
-    updateNoteMeta(note);
-    renderNotesList();
-  }, 600);
-}
+// ── TEMA ──────────────────────────────────────────────────────────────────────
 
 function applyTheme(theme) {
   document.documentElement.setAttribute('data-theme', theme);
   var icon = document.getElementById('theme-icon');
-  if (icon) {
-    icon.className = theme === 'dark' ? 'ti ti-sun' : 'ti ti-moon';
-  }
+  if (icon) icon.className = theme === 'dark' ? 'ti ti-sun' : 'ti ti-moon';
 }
 
 function toggleTheme() {
@@ -1313,134 +927,139 @@ function loadTheme() {
   applyTheme(saved);
 }
 
+// ── NOTAS ─────────────────────────────────────────────────────────────────────
 
-document.addEventListener('DOMContentLoaded', function() {
-  loadTheme();
-  loadUsers();
-  loadSession();
-  loadAlerts();
-  loadData();
-
-  if (!currentUser) {
-    showLoginScreen();
+function renderNotesView() {
+  var listEl = document.getElementById('notes-list');
+  if (!listEl) return;
+  if (!notes.length) {
+    listEl.innerHTML = '<div class="note-list-empty"><i class="ti ti-notes-off"></i><p>Nenhuma anotação.</p></div>';
   } else {
-    hideLoginScreen();
-    loadNotes();
-    updateUserUI();
+    var html = '';
+    for (var i = 0; i < notes.length; i++) {
+      var n = notes[i];
+      var active = (n.id === currentNoteId);
+      html += '<div class="note-list-item' + (active ? ' active' : '') + '" onclick="selectNote(\'' + n.id + '\')">'
+        + '<div class="note-list-title">' + esc(n.title || 'Sem título') + '</div>'
+        + '<div class="note-list-date">' + formatRelativeTime(new Date(n.updatedAt).getTime()) + '</div>'
+        + '</div>';
+    }
+    listEl.innerHTML = html;
+  }
+
+  var editorWrap = document.getElementById('notes-editor');
+  if (!editorWrap) return;
+
+  if (!currentNoteId) {
+    editorWrap.innerHTML = '<div class="note-editor-empty"><i class="ti ti-notes" style="font-size:40px;color:var(--text-3)"></i><p>Selecione ou crie uma anotação.</p></div>';
+    return;
+  }
+
+  var note = notes.find(function(n) { return n.id === currentNoteId; });
+  if (!note) return;
+
+  renderNoteEditor(note);
+}
+
+function selectNote(id) {
+  currentNoteId = id;
+  renderNotesView();
+}
+
+async function newNote() {
+  if (!currentUser) { showToast('Faça login para criar anotações.'); return; }
+  var n = { id: 'note_' + Date.now(), userId: currentUser.id, title: 'Nova anotação', blocks: [{ type: 'p', text: '' }] };
+  try {
+    var created = await apiFetch('/api/notes', { method: 'POST', body: JSON.stringify(n) });
+    notes.unshift(created);
+    currentNoteId = created.id;
     render();
-  }
-  var alertDateInp = document.getElementById('alert-new-date');
-  if (alertDateInp) alertDateInp.value = new Date().toISOString().slice(0,10);
-
-  document.addEventListener('keydown', function(e) {
-    if (e.key === 'Escape') {
-      closeModal('proc-modal');
-      closeModal('cat-modal');
-      closeModal('view-modal');
-      var lb = document.querySelector('.image-lightbox');
-      if (lb) lb.remove();
-    }
-  });
-});
-
-var STORAGE_USERS    = 'suporte_users_v1';
-var STORAGE_SESSION  = 'suporte_session_v1';
-var STORAGE_ALERTS   = 'suporte_alerts_v1';
-
-var currentUser = null;
-var users = [];
-var alerts = [];     
-
-var USER_COLORS = ['#880000','#0C447C','#085041','#3C3489','#633806','#27500A','#712B13','#555550'];
-var USER_AVATARS = ['ti-user-circle','ti-user','ti-user-star','ti-user-bolt','ti-user-heart','ti-user-shield'];
-
-function getDefaultUsers() {
-  return [
-    { id: 'u_ingrid', name: 'Ingrid', color: '#880000', avatar: 'ti-user-circle', password: '123456' },
-    { id: 'u_lucia', name: 'Lúcia', color: '#0C447C', avatar: 'ti-user-star', password: '123456' }
-  ];
+  } catch(e) { showToast('Erro ao criar anotação.'); }
 }
 
-function loadUsers() {
-  var raw = storageGet(STORAGE_USERS);
-  var storedUsers = [];
-  if (raw) {
-    try { storedUsers = JSON.parse(raw); } catch(e) { storedUsers = []; }
-  }
-
-  var defaults = getDefaultUsers();
-  var mergedUsers = [];
-  var seenIds = {};
-
-  for (var i = 0; i < defaults.length; i++) {
-    var defaultUser = defaults[i];
-    var existing = null;
-    for (var j = 0; j < storedUsers.length; j++) {
-      var u = storedUsers[j];
-      if (u && (u.id === defaultUser.id || u.name === defaultUser.name)) {
-        existing = u;
-        break;
-      }
-    }
-
-    if (existing) {
-      mergedUsers.push({
-        id: defaultUser.id,
-        name: defaultUser.name,
-        color: existing.color || defaultUser.color,
-        avatar: existing.avatar || defaultUser.avatar,
-        password: existing.password || defaultUser.password
-      });
-    } else {
-      mergedUsers.push({
-        id: defaultUser.id,
-        name: defaultUser.name,
-        color: defaultUser.color,
-        avatar: defaultUser.avatar,
-        password: defaultUser.password
-      });
-    }
-
-    seenIds[defaultUser.id] = true;
-  }
-
-  for (var k = 0; k < storedUsers.length; k++) {
-    var customUser = storedUsers[k];
-    if (!customUser) continue;
-    if (customUser.id && seenIds[customUser.id]) continue;
-    if (customUser.name === 'Ingrid' || customUser.name === 'Lúcia') continue;
-    if (!customUser.password) customUser.password = '123456';
-    mergedUsers.push(customUser);
-  }
-
-  users = mergedUsers;
-  saveUsers();
+async function deleteCurrentNote() {
+  if (!currentNoteId) return;
+  if (!confirm('Excluir esta anotação?')) return;
+  try {
+    await apiFetch('/api/notes/' + currentNoteId, { method: 'DELETE' });
+    notes = notes.filter(function(n) { return n.id !== currentNoteId; });
+    currentNoteId = notes.length ? notes[0].id : null;
+    render();
+  } catch(e) { showToast('Erro ao excluir anotação.'); }
 }
 
-function saveUsers() { storageSet(STORAGE_USERS, JSON.stringify(users)); }
+// Editor de notas simplificado (mantendo compatibilidade com o original)
+var _noteSaveTimer = null;
 
-function loadSession() {
-  var raw = storageGet(STORAGE_SESSION);
-  if (raw) { try { currentUser = JSON.parse(raw); } catch(e) { currentUser = null; } }
-  if (currentUser) {
-    var found = users.find(function(u) { return u.id === currentUser.id; });
-    if (!found) currentUser = null;
+function renderNoteEditor(note) {
+  var editorWrap = document.getElementById('notes-editor');
+  if (!editorWrap) return;
+
+  var blocks = note.blocks || [{ type: 'p', text: '' }];
+  var html = '<div class="notes-editor-topbar">'
+    + '<input class="note-title-input" id="note-title-input" value="' + esc(note.title || '') + '" placeholder="Título da anotação" oninput="onNoteTitleInput()" />'
+    + '<button class="icon-btn del" onclick="deleteCurrentNote()" title="Excluir anotação"><i class="ti ti-trash"></i></button>'
+    + '</div>'
+    + '<div class="note-blocks" id="note-blocks-container">';
+
+  for (var i = 0; i < blocks.length; i++) {
+    var b = blocks[i];
+    var cls = 'block-' + (b.type || 'p');
+    html += '<div class="note-block ' + cls + '" data-idx="' + i + '">'
+      + '<div class="block-input" contenteditable="true" data-type="' + (b.type||'p') + '" oninput="onNoteBlockInput(' + i + ')">' + esc(b.text || '') + '</div>'
+      + '</div>';
   }
+  html += '<button class="note-add-block-btn" onclick="addNoteBlock()"><i class="ti ti-plus"></i> Adicionar bloco</button>';
+  html += '</div>';
+  editorWrap.innerHTML = html;
 }
 
-function saveSession() {
-  if (currentUser) storageSet(STORAGE_SESSION, JSON.stringify(currentUser));
-  else storageSet(STORAGE_SESSION, '');
+function onNoteTitleInput() {
+  var note = notes.find(function(n) { return n.id === currentNoteId; });
+  if (!note) return;
+  var inp = document.getElementById('note-title-input');
+  note.title = inp ? inp.value : note.title;
+  scheduleNoteSave();
 }
 
-
-function loadAlerts() {
-  var raw = storageGet(STORAGE_ALERTS);
-  if (raw) { try { alerts = JSON.parse(raw); } catch(e) { alerts = []; } }
-  else { alerts = []; }
+function onNoteBlockInput(idx) {
+  var note = notes.find(function(n) { return n.id === currentNoteId; });
+  if (!note) return;
+  var containers = document.querySelectorAll('.block-input');
+  if (containers[idx]) {
+    if (!note.blocks[idx]) note.blocks[idx] = { type: 'p', text: '' };
+    note.blocks[idx].text = containers[idx].innerText || '';
+  }
+  scheduleNoteSave();
 }
 
-function saveAlerts() { storageSet(STORAGE_ALERTS, JSON.stringify(alerts)); }
+function addNoteBlock() {
+  var note = notes.find(function(n) { return n.id === currentNoteId; });
+  if (!note) return;
+  note.blocks.push({ type: 'p', text: '' });
+  renderNoteEditor(note);
+  var blocks = document.querySelectorAll('.block-input');
+  if (blocks.length) blocks[blocks.length - 1].focus();
+}
+
+function scheduleNoteSave() {
+  if (_noteSaveTimer) clearTimeout(_noteSaveTimer);
+  _noteSaveTimer = setTimeout(persistCurrentNote, 1200);
+}
+
+async function persistCurrentNote() {
+  var note = notes.find(function(n) { return n.id === currentNoteId; });
+  if (!note) return;
+  try {
+    await apiFetch('/api/notes/' + note.id, { method: 'PUT', body: JSON.stringify({ title: note.title, blocks: note.blocks }) });
+    // atualizar updatedAt local
+    note.updatedAt = new Date().toISOString();
+    var listItem = document.querySelector('.note-list-item.active .note-list-title');
+    if (listItem) listItem.textContent = note.title || 'Sem título';
+  } catch(e) { /* silencioso */ }
+}
+
+// ── LOGIN / USUÁRIOS ──────────────────────────────────────────────────────────
 
 function showLoginScreen() {
   document.getElementById('login-screen').style.display = 'flex';
@@ -1454,23 +1073,14 @@ function hideLoginScreen() {
 }
 
 function showLoginPassword(userId) {
-  var allInputs = document.querySelectorAll('.login-password-input');
+  var allInputs  = document.querySelectorAll('.login-password-input');
   var allButtons = document.querySelectorAll('.login-enter-btn');
-  for (var i = 0; i < allInputs.length; i++) {
-    allInputs[i].style.display = 'none';
-  }
-  for (var j = 0; j < allButtons.length; j++) {
-    allButtons[j].style.display = 'none';
-  }
-
+  for (var i = 0; i < allInputs.length; i++) allInputs[i].style.display = 'none';
+  for (var j = 0; j < allButtons.length; j++) allButtons[j].style.display = 'none';
   var input = document.getElementById('login-pass-' + userId);
-  var btn = document.getElementById('login-enter-' + userId);
-  if (input) {
-    input.style.display = 'block';
-    input.value = '';
-    input.focus();
-  }
-  if (btn) btn.style.display = 'inline-flex';
+  var btn   = document.getElementById('login-enter-' + userId);
+  if (input) { input.style.display = 'block'; input.value = ''; input.focus(); }
+  if (btn)   btn.style.display = 'inline-flex';
 }
 
 function renderLoginUsers() {
@@ -1483,10 +1093,10 @@ function renderLoginUsers() {
   var html = '';
   for (var i = 0; i < users.length; i++) {
     var u = users[i];
-    html += '<div class="login-avatar-card" onclick="showLoginPassword(\'' + u.id + '\')" style="--ua-color:' + u.color + '">'
-      + '<div class="login-avatar-icon"><i class="ti ' + u.avatar + '"></i></div>'
+    html += '<div class="login-avatar-card" onclick="showLoginPassword(\'' + u.id + '\')" style="--ua-color:' + (u.color||'#880000') + '">'
+      + '<div class="login-avatar-icon"><i class="ti ' + (u.avatar||'ti-user-circle') + '"></i></div>'
       + '<span class="login-avatar-name">' + esc(u.name) + '</span>'
-      + '<input type="password" class="login-password-input" id="login-pass-' + u.id + '" placeholder="Senha" onkeydown="if(event.key===\'Enter\') loginAs(\'' + u.id + '\', document.getElementById(\'login-pass-' + u.id + '\').value)" onClick="event.stopPropagation()" />'
+      + '<input type="password" class="login-password-input" id="login-pass-' + u.id + '" placeholder="Senha" onkeydown="if(event.key===\'Enter\') loginAs(\'' + u.id + '\', document.getElementById(\'login-pass-' + u.id + '\').value)" onclick="event.stopPropagation()" />'
       + '<button class="btn-new login-enter-btn" id="login-enter-' + u.id + '" onclick="event.stopPropagation(); loginAs(\'' + u.id + '\', document.getElementById(\'login-pass-' + u.id + '\').value)">Entrar</button>'
       + '<button class="login-del-user" onclick="event.stopPropagation(); deleteUser(event,\'' + u.id + '\')" title="Remover perfil"><i class="ti ti-x"></i></button>'
       + '</div>';
@@ -1494,11 +1104,11 @@ function renderLoginUsers() {
   grid.innerHTML = html;
 }
 
-function loginAs(userId, password) {
+async function loginAs(userId, password) {
   var u = users.find(function(x) { return x.id === userId; });
   if (!u) return;
 
-  var enteredPassword = (password || '').toString();
+  var enteredPassword  = (password || '').toString();
   var expectedPassword = (u.password || '123456').toString();
 
   if (enteredPassword !== expectedPassword) {
@@ -1509,7 +1119,7 @@ function loginAs(userId, password) {
   currentUser = u;
   saveSession();
   hideLoginScreen();
-  loadNotes();
+  await loadNotes();
   updateUserUI();
   render();
   showToast('Olá, ' + u.name + '!');
@@ -1546,43 +1156,42 @@ function selectAvatar(el, icon) {
   el.classList.add('selected');
 }
 
-function createUser() {
-  var nameEl = document.getElementById('new-user-name');
-  var name = (nameEl ? nameEl.value : '').trim();
+async function createUser() {
+  var nameEl    = document.getElementById('new-user-name');
+  var name      = (nameEl ? nameEl.value : '').trim();
   if (!name) { showToast('Digite um nome para o perfil.'); return; }
 
-  var passwordEl = document.getElementById('new-user-password');
-  var confirmEl = document.getElementById('new-user-password-confirm');
-  var password = passwordEl ? passwordEl.value : '';
-  var confirmPassword = confirmEl ? confirmEl.value : '';
+  var passwordEl  = document.getElementById('new-user-password');
+  var confirmEl   = document.getElementById('new-user-password-confirm');
+  var password        = passwordEl ? passwordEl.value : '';
+  var confirmPassword = confirmEl  ? confirmEl.value  : '';
 
-  if (password !== confirmPassword) {
-    showToast('As senhas não conferem.');
-    return;
-  }
+  if (password !== confirmPassword) { showToast('As senhas não conferem.'); return; }
 
   var colorEl = document.getElementById('user-color-pick');
-  var color = colorEl ? colorEl.value : USER_COLORS[0];
-
-  var selBtn = document.querySelector('.avatar-pick-btn.selected');
-  var avatar = selBtn ? selBtn.dataset.icon : USER_AVATARS[0];
+  var color   = colorEl ? colorEl.value : USER_COLORS[0];
+  var selBtn  = document.querySelector('.avatar-pick-btn.selected');
+  var avatar  = selBtn ? selBtn.dataset.icon : USER_AVATARS[0];
 
   var u = { id: 'u_' + Date.now(), name: name, color: color, avatar: avatar, password: password || '123456' };
-  users.push(u);
-  saveUsers();
-  closeCreateUserModal();
-  renderLoginUsers();
-  showToast('Perfil "' + name + '" criado!');
+
+  try {
+    var created = await apiFetch('/api/users', { method: 'POST', body: JSON.stringify(u) });
+    users.push(created);
+    closeCreateUserModal();
+    renderLoginUsers();
+    showToast('Perfil "' + name + '" criado!');
+  } catch(e) { showToast('Erro ao criar perfil.'); }
 }
 
-function deleteUser(e, userId) {
+async function deleteUser(e, userId) {
   e.stopPropagation();
   if (!confirm('Remover este perfil? As anotações serão apagadas.')) return;
-  users = users.filter(function(u) { return u.id !== userId; });
-  var key = 'suporte_notes_v1_' + userId;
-  try { localStorage.removeItem(key); } catch(ex) {}
-  saveUsers();
-  renderLoginUsers();
+  try {
+    await apiFetch('/api/users/' + userId, { method: 'DELETE' });
+    users = users.filter(function(u) { return u.id !== userId; });
+    renderLoginUsers();
+  } catch(e) { showToast('Erro ao remover perfil.'); }
 }
 
 function openPasswordModal() {
@@ -1597,76 +1206,48 @@ function closePasswordModal() {
   document.getElementById('change-password-modal').style.display = 'none';
 }
 
-function changePassword() {
+async function changePassword() {
   if (!currentUser) return;
-  var newPasswordEl = document.getElementById('new-password');
-  var confirmEl = document.getElementById('new-password-confirm');
-  var password = newPasswordEl ? newPasswordEl.value : '';
-  var confirmPassword = confirmEl ? confirmEl.value : '';
+  var password        = document.getElementById('new-password') ? document.getElementById('new-password').value : '';
+  var confirmPassword = document.getElementById('new-password-confirm') ? document.getElementById('new-password-confirm').value : '';
 
-  if (!password || !confirmPassword) {
-    showToast('Digite e confirme a nova senha.');
-    return;
-  }
-
-  if (password !== confirmPassword) {
-    showToast('As senhas não conferem.');
-    return;
-  }
+  if (!password || !confirmPassword) { showToast('Digite e confirme a nova senha.'); return; }
+  if (password !== confirmPassword)  { showToast('As senhas não conferem.'); return; }
 
   var user = users.find(function(u) { return u.id === currentUser.id; });
   if (!user) return;
 
-  user.password = password;
+  user.password    = password;
   currentUser.password = password;
-  saveUsers();
-  saveSession();
-  closePasswordModal();
-  showToast('Senha alterada com sucesso.');
+
+  try {
+    await apiFetch('/api/users', { method: 'POST', body: JSON.stringify(user) });
+    saveSession();
+    closePasswordModal();
+    showToast('Senha alterada com sucesso.');
+  } catch(e) { showToast('Erro ao alterar senha.'); }
 }
 
 function updateUserUI() {
-  var avatar = document.getElementById('sidebar-user-avatar');
-  var name   = document.getElementById('sidebar-user-name');
-  var panelCard = document.getElementById('profile-panel-card');
+  var avatar     = document.getElementById('sidebar-user-avatar');
+  var name       = document.getElementById('sidebar-user-name');
+  var panelCard  = document.getElementById('profile-panel-card');
   var panelAvatar = document.getElementById('profile-panel-avatar');
-  var panelName = document.getElementById('profile-panel-name');
+  var panelName  = document.getElementById('profile-panel-name');
   if (!currentUser) {
     if (avatar) avatar.innerHTML = '<i class="ti ti-user"></i>';
     if (name)   name.textContent = 'Sem perfil';
     if (panelCard) panelCard.style.display = 'none';
     return;
   }
-  if (avatar) {
-    avatar.innerHTML = '<i class="ti ' + currentUser.avatar + '"></i>';
-    avatar.style.color = currentUser.color;
-  }
-  if (name) name.textContent = currentUser.name;
+  if (avatar) { avatar.innerHTML = '<i class="ti ' + currentUser.avatar + '"></i>'; avatar.style.color = currentUser.color; }
+  if (name)   name.textContent = currentUser.name;
   if (panelCard) panelCard.style.display = 'flex';
-  if (panelAvatar) {
-    panelAvatar.innerHTML = '<i class="ti ' + currentUser.avatar + '"></i>';
-    panelAvatar.style.color = currentUser.color;
-  }
+  if (panelAvatar) { panelAvatar.innerHTML = '<i class="ti ' + currentUser.avatar + '"></i>'; panelAvatar.style.color = currentUser.color; }
   if (panelName) panelName.textContent = currentUser.name;
 }
 
-
-
-function getNotesStorageKey() {
-  if (currentUser) return 'suporte_notes_v1_' + currentUser.id;
-  return STORAGE_NOTES; 
-}
-var _origLoadNotes = loadNotes;
-loadNotes = function() {
-  var raw = storageGet(getNotesStorageKey());
-  if (raw) { try { notes = JSON.parse(raw); } catch(e) { notes = []; } }
-  else { notes = []; }
-};
-
-var _origSaveNotes = saveNotes;
-saveNotes = function() {
-  storageSet(getNotesStorageKey(), JSON.stringify(notes));
-};
+// ── ALERTAS ───────────────────────────────────────────────────────────────────
 
 function openAlertsModal() {
   renderAlerts();
@@ -1680,7 +1261,6 @@ function closeAlertsModal() {
 function renderAlerts() {
   var list = document.getElementById('alerts-list');
   if (!list) return;
-
   var open   = alerts.filter(function(a) { return !a.done; });
   var closed = alerts.filter(function(a) { return  a.done; });
   var sorted = open.concat(closed);
@@ -1694,7 +1274,7 @@ function renderAlerts() {
   var html = '';
   for (var i = 0; i < sorted.length; i++) {
     var a = sorted[i];
-    var isOld = isOlderThanToday(a.date);
+    var isOld    = isOlderThanToday(a.date);
     var ageClass = isOld ? ' alert-old' : '';
     var doneClass = a.done ? ' alert-done' : '';
     html += '<div class="alert-item' + ageClass + doneClass + '">'
@@ -1704,7 +1284,7 @@ function renderAlerts() {
       + '<div class="alert-item-body">'
       + '<div class="alert-item-text">' + esc(a.text) + '</div>'
       + '<div class="alert-item-meta">'
-      + '<span><i class="ti ti-user" style="font-size:11px"></i> ' + esc(a.authorName) + '</span>'
+      + '<span><i class="ti ti-user" style="font-size:11px"></i> ' + esc(a.authorName||'') + '</span>'
       + '<span><i class="ti ti-calendar" style="font-size:11px"></i> ' + formatAlertDate(a.date) + '</span>'
       + (isOld && !a.done ? '<span class="alert-overdue"><i class="ti ti-alert-triangle" style="font-size:11px"></i> Pendente do dia anterior</span>' : '')
       + '</div>'
@@ -1718,28 +1298,21 @@ function renderAlerts() {
 }
 
 function isOlderThanToday(dateStr) {
-  var today = new Date();
-  var d = new Date(dateStr);
-  today.setHours(0,0,0,0);
-  d.setHours(0,0,0,0);
+  var today = new Date(); today.setHours(0,0,0,0);
+  var d = new Date(dateStr); d.setHours(0,0,0,0);
   return d < today;
 }
 
 function formatAlertDate(dateStr) {
-  var d = new Date(dateStr);
-  return d.toLocaleDateString('pt-BR');
+  return new Date(dateStr).toLocaleDateString('pt-BR');
 }
 
 function updateAlertBadge() {
   var open = alerts.filter(function(a) { return !a.done; });
   var btn = document.getElementById('alerts-badge');
   if (btn) {
-    if (open.length) {
-      btn.textContent = open.length;
-      btn.style.display = '';
-    } else {
-      btn.style.display = 'none';
-    }
+    if (open.length) { btn.textContent = open.length; btn.style.display = ''; }
+    else btn.style.display = 'none';
   }
   var overdue = alerts.filter(function(a) { return !a.done && isOlderThanToday(a.date); });
   var dashBadge = document.getElementById('dashboard-alert-banner');
@@ -1753,47 +1326,88 @@ function updateAlertBadge() {
   }
 }
 
-function addAlert() {
+async function addAlert() {
   if (!currentUser) { showToast('Faça login para adicionar avisos.'); return; }
-  var inp = document.getElementById('alert-new-input');
+  var inp     = document.getElementById('alert-new-input');
   var dateInp = document.getElementById('alert-new-date');
   var text = (inp ? inp.value.trim() : '');
   if (!text) { showToast('Escreva o aviso antes de salvar.'); return; }
 
-  var today = new Date();
-  var dateStr = dateInp && dateInp.value ? dateInp.value : today.toISOString().slice(0,10);
+  var dateStr = dateInp && dateInp.value ? dateInp.value : new Date().toISOString().slice(0,10);
 
-  alerts.unshift({
-    id: 'al_' + Date.now(),
-    text: text,
-    authorId: currentUser.id,
-    authorName: currentUser.name,
-    date: dateStr,
-    done: false
-  });
-
-  saveAlerts();
-  if (inp) inp.value = '';
-  if (dateInp) dateInp.value = new Date().toISOString().slice(0,10);
-  renderAlerts();
-  showToast('Aviso adicionado.');
+  try {
+    var created = await apiFetch('/api/alerts', { method: 'POST', body: JSON.stringify({
+      id: 'al_' + Date.now(), text: text,
+      authorId: currentUser.id, authorName: currentUser.name, date: dateStr, done: false
+    })});
+    alerts.unshift({ id: created.id, text: created.text, authorId: created.author_id, authorName: created.author_name, date: created.date, done: created.done });
+    if (inp) inp.value = '';
+    if (dateInp) dateInp.value = new Date().toISOString().slice(0,10);
+    renderAlerts();
+    showToast('Aviso adicionado.');
+  } catch(e) { showToast('Erro ao adicionar aviso.'); }
 }
 
-function toggleAlert(id) {
+async function toggleAlert(id) {
   var a = alerts.find(function(x) { return x.id === id; });
   if (!a) return;
   a.done = !a.done;
-  saveAlerts();
-  renderAlerts();
-  renderDashboard();
+  try {
+    await apiFetch('/api/alerts/' + id, { method: 'PUT', body: JSON.stringify({ done: a.done }) });
+    renderAlerts();
+    renderDashboard();
+  } catch(e) { a.done = !a.done; showToast('Erro ao atualizar aviso.'); }
 }
 
-function deleteAlert(id) {
+async function deleteAlert(id) {
   if (!confirm('Remover este aviso?')) return;
-  alerts = alerts.filter(function(a) { return a.id !== id; });
-  saveAlerts();
-  renderAlerts();
-  renderDashboard();
+  try {
+    await apiFetch('/api/alerts/' + id, { method: 'DELETE' });
+    alerts = alerts.filter(function(a) { return a.id !== id; });
+    renderAlerts();
+    renderDashboard();
+  } catch(e) { showToast('Erro ao remover aviso.'); }
 }
 
+// ── INIT ──────────────────────────────────────────────────────────────────────
 
+document.addEventListener('DOMContentLoaded', async function() {
+  loadTheme();
+
+  // Mostrar tela de carregamento enquanto busca dados
+  var appRoot = document.getElementById('app-root');
+  var loginScreen = document.getElementById('login-screen');
+  if (appRoot) appRoot.style.display = 'none';
+  if (loginScreen) loginScreen.style.display = 'none';
+
+  try {
+    await loadUsers();
+    await Promise.all([loadData(), loadAlerts()]);
+  } catch(e) {
+    showToast('Erro ao conectar ao servidor.');
+  }
+
+  loadSession();
+
+  if (!currentUser) {
+    showLoginScreen();
+  } else {
+    hideLoginScreen();
+    await loadNotes();
+    updateUserUI();
+    render();
+  }
+
+  var alertDateInp = document.getElementById('alert-new-date');
+  if (alertDateInp) alertDateInp.value = new Date().toISOString().slice(0,10);
+
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape') {
+      closeModal('proc-modal');
+      closeModal('cat-modal');
+      closeModal('view-modal');
+      var lb = document.querySelector('.image-lightbox');
+      if (lb) lb.remove();
+    }
+  });
+});
