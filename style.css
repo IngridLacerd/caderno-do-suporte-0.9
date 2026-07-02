@@ -2002,6 +2002,6 @@ textarea:focus {
 .avatar-pick-btn:hover { border-color:var(--accent);color:var(--accent); }
 .avatar-pick-btn.selected { border-color:var(--accent);color:var(--accent);background:var(--accent-bg); }
 
-/* Modal criar perfil: z-index acima da tela de login */
+
 #create-user-modal { z-index: 10000; }
 .toast { z-index: 10001; }
