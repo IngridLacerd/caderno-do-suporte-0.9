@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Entrar — Caderno do Suporte</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css"/>
+<script>
+(function() {
+  var t = localStorage.getItem('suporte_theme');
+  if (t === 'dark') document.documentElement.setAttribute('data-theme','dark');
+})();
+function toggleTheme() {
+  var d = document.documentElement.getAttribute('data-theme') === 'dark';
+  document.documentElement.setAttribute('data-theme', d ? 'light' : 'dark');
+  localStorage.setItem('suporte_theme', d ? 'light' : 'dark');
+  var icon = document.getElementById('theme-icon');
+  if (icon) icon.className = d ? 'ti ti-moon' : 'ti ti-sun';
+}
+</script>
+<style>
+:root {
+  --bg: #F5F4F2; --surface: #FFFFFF; --ink: #1A1714; --ink-soft: #5A5650;
+  --ink-muted: #9A9690; --brand: #880000; --brand-dark: #660000;
+  --border: rgba(26,23,20,0.10); --border-strong: rgba(26,23,20,0.18);
+  --radius: 14px; --radius-sm: 8px;
+  --shadow: 0 8px 32px rgba(26,23,20,0.12), 0 2px 8px rgba(26,23,20,0.06);
+  --danger: #A32D2D; --danger-bg: #FCEBEB;
+}
+html[data-theme="dark"] {
+  --bg: #181614; --surface: #211E1B; --ink: #F2EFEC; --ink-soft: #C9C4BF;
+  --ink-muted: #8E8782; --brand: #D63C3C; --brand-dark: #B42828;
+  --border: rgba(255,255,255,0.08); --border-strong: rgba(255,255,255,0.14);
+  --shadow: 0 8px 32px rgba(0,0,0,0.4);
+  --danger: #E08080; --danger-bg: rgba(214,60,60,0.16);
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--ink);
+  min-height: 100vh; display: flex; align-items: center; justify-content: center;
+  padding: 24px; transition: background .2s, color .2s; }
+.card { width: 100%; max-width: 400px; background: var(--surface);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 36px 32px; position: relative; }
+.theme-btn { position: absolute; top: 16px; right: 16px; width: 34px; height: 34px;
+  border-radius: 50%; border: 1px solid var(--border-strong); background: var(--bg);
+  color: var(--ink-soft); cursor: pointer; display: flex; align-items: center;
+  justify-content: center; transition: all .15s; }
+.theme-btn:hover { background: var(--surface); color: var(--ink); }
+.logo { display: flex; align-items: center; gap: 10px; justify-content: center; margin-bottom: 24px; }
+.logo-icon { width: 38px; height: 38px; background: var(--brand); border-radius: 10px;
+  display: flex; align-items: center; justify-content: center; color: #fff; font-size: 20px; }
+.logo-text { font-weight: 700; font-size: 15px; }
+h1 { font-size: 21px; font-weight: 700; text-align: center; margin-bottom: 6px; }
+.subtitle { font-size: 13.5px; color: var(--ink-muted); text-align: center; margin-bottom: 26px; }
+.field { margin-bottom: 16px; }
+.field label { display: block; font-size: 13px; font-weight: 500; color: var(--ink-soft); margin-bottom: 6px; }
+.field input { width: 100%; padding: 11px 14px; border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm); font-family: 'Inter', sans-serif; font-size: 14px;
+  color: var(--ink); background: var(--surface); outline: none;
+  transition: border-color .15s, box-shadow .15s; }
+.field input:focus { border-color: var(--brand); box-shadow: 0 0 0 3px rgba(136,0,0,.10); }
+.btn { width: 100%; padding: 12px; background: var(--brand); border: none;
+  border-radius: var(--radius-sm); font-family: 'Inter', sans-serif; font-size: 14px;
+  font-weight: 600; color: #fff; cursor: pointer; transition: background .15s; margin-top: 6px; }
+.btn:hover { background: var(--brand-dark); }
+.btn:disabled { opacity: .6; cursor: not-allowed; }
+.alt { text-align: center; font-size: 13.5px; color: var(--ink-muted); margin-top: 20px; }
+.alt a { color: var(--brand); font-weight: 500; text-decoration: none; }
+.alt a:hover { text-decoration: underline; }
+.error { background: var(--danger-bg); color: var(--danger); font-size: 13px;
+  padding: 10px 14px; border-radius: var(--radius-sm); margin-bottom: 16px; display: none; }
+.error.show { display: block; }
+</style>
+</head>
+<body>
+<div class="card">
+  <button class="theme-btn" onclick="toggleTheme()" title="Alternar tema">
+    <i class="ti ti-moon" id="theme-icon"></i>
+  </button>
+  <div class="logo">
+    <div class="logo-icon"><i class="ti ti-notebook"></i></div>
+    <span class="logo-text">Caderno do Suporte</span>
+  </div>
+  <h1>Entrar</h1>
+  <p class="subtitle">Acesse sua conta para continuar</p>
+  <div class="error" id="error"></div>
+  <div class="field">
+    <label>Email</label>
+    <input id="email" type="email" placeholder="voce@exemplo.com" required/>
+  </div>
+  <div class="field">
+    <label>Senha</label>
+    <input id="password" type="password" placeholder="••••••••" required
+      onkeydown="if(event.key==='Enter')doLogin()"/>
+  </div>
+  <button class="btn" id="btn" onclick="doLogin()">Entrar</button>
+  <p class="alt">Não tem conta? <a href="cadastro.html">Cadastre-se</a></p>
+</div>
+<script>
+if (localStorage.getItem('suporte_token')) location.href = 'index.html';
+
+var icon = document.getElementById('theme-icon');
+if (icon) icon.className = document.documentElement.getAttribute('data-theme') === 'dark' ? 'ti ti-sun' : 'ti ti-moon';
+
+async function doLogin() {
+  var email = document.getElementById('email').value.trim();
+  var password = document.getElementById('password').value;
+  var err = document.getElementById('error');
+  var btn = document.getElementById('btn');
+  err.classList.remove('show');
+  btn.disabled = true; btn.textContent = 'Entrando…';
+  try {
+    var res = await fetch('/api/login', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email, password }) });
+    var data = await res.json();
+    if (!res.ok) { err.textContent = data.message || 'Erro ao entrar.'; err.classList.add('show'); return; }
+    localStorage.setItem('suporte_token', data.token);
+    location.href = 'index.html';
+  } catch(e) {
+    err.textContent = 'Não foi possível conectar ao servidor.'; err.classList.add('show');
+  } finally { btn.disabled = false; btn.textContent = 'Entrar'; }
+}
+</script>
+</body>
+</html>
