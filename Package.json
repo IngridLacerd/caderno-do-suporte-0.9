@@ -3,7 +3,7 @@
   "version": "1.0.1",
   "private": true,
   "main": "server.js",
-  "scripts": { "start": "node server.js" },
+  "scripts": { "start": "bash start.sh" },
   "dependencies": {
     "express": "^4.19.2",
     "cors": "^2.8.5",

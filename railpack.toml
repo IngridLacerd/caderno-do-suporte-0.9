@@ -1,3 +1,0 @@
-[processes]
-web = "caddy run --config Caddyfile --adapter caddyfile"
-api = "node server.js"
