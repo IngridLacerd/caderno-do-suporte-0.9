@@ -1,14 +1,11 @@
 {
-  "name": "caderno-suporte-server",
-  "version": "1.0.1",
-  "private": true,
+  "name": "caderno-do-suporte",
+  "version": "1.0.0",
   "main": "server.js",
-  "scripts": { "start": "bash start.sh" },
+  "scripts": {
+    "start": "node server.js"
+  },
   "dependencies": {
-    "express": "^4.19.2",
-    "cors": "^2.8.5",
-    "pg": "8.11.3",
-    "bcryptjs": "^2.4.3",
-    "jsonwebtoken": "^9.0.2"
+    "express": "^4.19.2"
   }
 }
